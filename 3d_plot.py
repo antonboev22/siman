@@ -1,5 +1,4 @@
-
-#if 0:
+if 0:
     from impurity import find_pores
     from scipy.spatial import ConvexHull
 
