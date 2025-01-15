@@ -1749,6 +1749,7 @@ def wulff(st, miller_list = None, e_surf_list = None, show = 0):
     from pymatgen.analysis.wulff import WulffShape
     WS = WulffShape(lat, miller_list, e_surf_list)
     # print(dir(WS))
+    print(WS.area_fraction_dict)
     anisotropy = WS.anisotropy
     weighted_surface_energy = WS.weighted_surface_energy
     if show:

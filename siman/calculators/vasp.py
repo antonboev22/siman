@@ -938,6 +938,50 @@ class CalculationVasp(Calculation):
         plt.show()
         return
 
+    def plot_energy_total_step(self,):
+        # print(self.maxforce)
+        # maxf = [m[1] for m in self.maxforce_list ]
+        # print(maxf)
+        from siman.picture_functions import plt
+        steps = range(len(self.list_energy_total))
+        plt.plot(steps, 1000*(np.array(self.list_etotal)-self.list_etotal[-1]) , '-o')
+        # plt.xlabel('MD step')
+        # plt.ylabel('Energy per cell (eV')
+        plt.xlabel('Step')
+        plt.ylabel('Total energy rel. to min (meV)')
+        plt.tight_layout()
+        plt.show()
+        return
+
+    def plot_energy_total_step2(self,):
+        # print(self.maxforce)
+        # maxf = [m[1] for m in self.maxforce_list ]
+        # print(maxf)
+        from siman.picture_functions import plt
+        import statsmodels.api as sm  # module to build a LOWESS model
+        import pandas as pd
+
+        lowess = sm.nonparametric.lowess
+
+        steps = range(len(self.list_e_sigma0))
+        e_total = np.array(self.list_e_sigma0) + np.array(self.list_ekin)
+        de = 1000*(np.array(e_total)-e_total[-1])
+
+        temp_lowess = lowess(endog=de, exog=steps)
+        temp_lowess = pd.Series(temp_lowess[:, 1], index=range(len(de)))
+
+        
+        plt.plot(steps, de , '-o')
+
+        plt.plot(temp_lowess,    marker="o",    markersize=2,    linestyle="-")
+        # plt.xlabel('MD step')
+        # plt.ylabel('Energy per cell (eV')
+        plt.xlabel('Step')
+        plt.ylabel('Total energy rel. to min (meV)')
+        plt.tight_layout()
+        plt.show()
+        return
+
     def plot_energy_conv(self,):
         # print(self.maxforce)
         # maxf = [m[1] for m in self.maxforce_list ]

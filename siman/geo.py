@@ -2826,7 +2826,7 @@ def create_ads_molecule(st, molecule = ['O'], mol_xc = [[0,0,0]], conf_i = [0], 
 
 
     adsorbate = Molecule(molecule, mol_xc)
-    ads_structs = asf_pm.generate_adsorption_structures(adsorbate,repeat=None, min_lw=8.0,  find_args=find_args)
+    ads_structs = asf_pm.generate_adsorption_structures(adsorbate,repeat=None, min_lw=5.0,  find_args=find_args)
     print('\nI\'ve found ',len(ads_structs), ' configurations for ', molecule, ' on the surface\n')
 
     st_ads_pack = []

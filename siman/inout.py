@@ -164,7 +164,7 @@ def cif2poscar(cif_file, poscar_file):
 
         #check
         if not os.path.exists(poscar_file):
-            printlog("Error! cif2cell failed")
+            printlog("Error! cif2cell failed. Check that cif2cell is installed and available in your system")
 
     else:
         printlog('Error! Support of cif files requires pymatgen or cif2cell; install it with "pip install pymatgen" or provide POSCAR or Abinit input file')
@@ -194,15 +194,17 @@ def smart_structure_read(filename = None, curver = 1, calcul = None, input_folde
 
     if filename:
         input_geo_file = filename
+    # print(input_geo_file)
+    # sys.exit()
 
     if input_geo_file:
-
         printlog("You provided the following geo file explicitly ", input_geo_file, 
             '; Version of file does not matter, I use *curver*=',curver, 'as a new version' )
+        # sys.exit()
         
     elif input_folder:
 
-        printlog("I am searching for geofiles in folder "+input_folder+"\n" )
+        printlog("I am searching for geofiles in folder "+input_folder+" with format", input_geo_format, "\n" )
 
         if input_geo_format: 
             geofilelist = glob.glob(input_folder+'/'+search_templates[input_geo_format]) #Find input_geofile of specific format
@@ -296,12 +298,17 @@ def read_xyz(st, filename, rprimd = None):
     INPUT:
         st (Structure) 
         filename (str) - path to file with xyz data
-        rprimd (list of lists) - if None or [None, ] then Tv are read; if Tv does not exist then create automatically 
+        rprimd (list of lists) - if None or [None, ] then Tv or VEC are read; if Tv does not exist then create automatically 
 
     """
     with open(filename,'r') as f:
         nlines = int(f.readline())
-        st.name = f.readline().strip().split()[0]
+        name = f.readline().strip().replace(' ', '_')
+        if name:
+            st.name = name
+        else:
+            st.name = 'noname'
+
         
         # try:
         if 'SG' in st.name:
@@ -312,13 +319,14 @@ def read_xyz(st, filename, rprimd = None):
         elements = []
         st.xcart = []
         st.rprimd = []
-        for i in range(nlines):
+        for i in range(nlines+3):
             xc = f.readline().split()
             if len(xc) == 0:
-                printlog('Warning! xyz file is broken, not enough lines')
+                if i < nlines:
+                    printlog('Warning! xyz file is broken')
                 break
-
-            if 'Tv' in xc[0]: 
+            # print(xc[0])
+            if 'Tv' in xc[0] or 'VEC' in xc[0]: 
                 st.rprimd.append(np.asarray(xc[1:], dtype = float) )
 
             else:
@@ -380,7 +388,8 @@ def read_xyz(st, filename, rprimd = None):
 
     printlog('Final rprimd = \n', np.round(st.rprimd, 3), imp = 'y')
 
-
+    for i in 0,1,2:
+        st.rprimd[i] = np.array(st.rprimd[i])
 
     st.nznucl = st.get_nznucl()
 
@@ -1325,6 +1334,8 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         maxforce = []; average = [];  gstress =[]
         # mforce = []
         self.list_e_sigma0 = []
+        self.list_etotal = [] # list of MD energies
+        self.list_ekin = [] # list of kinetic energies  
         self.list_e_without_entr = []
         self.list_e_conv = [] # convergence of energy - all steps
         # try:
@@ -1629,6 +1640,13 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
                     #pass
 
 
+            if 0 and "g(Stress)" in line:
+                                # print( line)
+                if 'ortho' in line:
+                    gstr = float(line.split('=')[2].split('ortho')[0])
+                else:
+                    gstr = float(line.split('=')[2])
+                gstress.append( round( gstr*1000 *100, 3 )  )
             if "g(Stress)" in line:
                 #print line
                 gstress.append( round( float(line.split('=')[2].split()[0])*1000 *100, 3 )  )
@@ -1664,8 +1682,23 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
             if  "-V(xc)+E(xc)   XCENC" in line:
                 self.energy.xc = float(line.split()[-1]) # Kohn-Sham exchange-correlation energy
             if  "PAW double counting" in line:
-                self.energy.pawdc1 = float(line.split()[-2]) #
-                self.energy.pawdc2 = float(line.split()[-1]) #
+                # print('inout:', line)
+                if '*' in line:
+                    line = 'p=0 -0'
+                numbers = line.split('=')[1]
+                e = numbers.split()
+                if len(e) == 1:
+                    e = numbers.split('-')
+                    e[1] = '-'+e[1]
+                if len(e) == 1:
+                    e = ['0', '0']
+
+                # print(e)
+                self.energy.pawdc1 = float(e[0].strip()) #
+                # print(self.energy.pawdc1 )
+
+                self.energy.pawdc2 = float(e[1].strip()) #
+
             if  "eigenvalues    EBANDS" in line:
                 try:
                     self.energy.bands = float(line.split()[-1]) # - Kohn Sham eigenvalues - include kinetic energy , but not exactly
@@ -1698,8 +1731,15 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
 
             if "free  energy   TOTEN  =" in line:
                 #self.energy = float(line.split()[4])
-                self.energy_free = float(line.split()[4]) #F free energy
+                self.energy_free = float(line.split()[4]) # F free energy
             
+            if "energy   ETOTAL =" in line:
+                self.etotal = float(line.split()[4]) # Total energy in MD simulation
+                self.list_etotal.append(self.etotal)
+            
+            if "kinetic energy EKIN   =" in  line:
+                self.ekin = float(line.split()[4]) # Kinetic energy in MD simulation
+                self.list_ekin.append(self.ekin)
 
 
 
@@ -1808,14 +1848,14 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
 
             if 'magnetization (x)' in line:
                 # print(line)
-                if ifmaglist is not None:
-                    mags = []
-                    for j in range(self.end.natom):
-                        mags.append( float(outcarlines[i_line+j+4].split()[-1]) )
-                    
-                    tot_mag_by_atoms.append(np.array(mags))#[ifmaglist])
-                    # print(ifmaglist)
-                    tot_mag_by_mag_atoms.append(np.array(mags)[ifmaglist])
+                # if ifmaglist is not None:
+                mags = []
+                for j in range(self.end.natom):
+                    mags.append( float(outcarlines[i_line+j+4].split()[-1]) )
+                
+                tot_mag_by_atoms.append(np.array(mags))#[ifmaglist])
+                # print(ifmaglist)
+                tot_mag_by_mag_atoms.append(np.array(mags)[ifmaglist])
                 # print tot_mag_by_atoms
                 # magnetic_elements
                 # ifmaglist
@@ -2466,7 +2506,7 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         # if not hasattr(cl, 'name'):
             # cl.name = 'noname'
 
-        outst_simple = '|'.join([cl.name, etot, lens, strs, Nmd])
+        outst_simple = '|'.join([etot, lens, strs, Nmd])
         # print("Bi2Se3.static.1               |  -20.1543  |    10.27;10.27;10.27    | -680,-680,-657 |   1,13, 13   |    ")
         if header.show_head :
             printlog("                          |  energy(eV)|    Vector lenghts (A)   | Stresses (MPa)     | N MD, N SCF   ", end = '\n', imp = 'Y')
@@ -2512,15 +2552,27 @@ def read_aims_out(cl, load = '', out_type = '', show = ''):
     return outstr
 
 
-def read_atat_fit_out(filename, filter_names = None, i_energy = 1):
+def read_atat_fit_out(filename, filter_names = None, i_energy = 1, xmax = 1, e0e1exmax = None, subs = None):
     """
     read fit.out of atat
-    filter_names - do not read name numbers greater than filter_name
-    i_energy - 1 for fit.out, 2 for predstr.out
-    return - concentration list, energy list
+    INPUT:
+        - filter_names - do not read name numbers greater than filter_name
+        - i_energy - 1 for fit.out, 2 for predstr.out
+        - return - concentration list, energy list
+        - xmax (float) - maximum value of concentration
+        - e0e1exmax (list*3) - e0, e1, and e_xmax, needed to recalculate if xmax is not equal to 1
     """
     X, E, nam = [] ,[], []
     count = 0
+    if subs is None:
+       subs = {}
+
+    if e0e1exmax is None:
+        e0e1exmax = [0,0,0]
+    e0 = e0e1exmax[0]
+    e1 = e0e1exmax[1]
+    e_xmax = e0e1exmax[2]
+
     with open(filename, 'r') as f:
         for line in f:
 
@@ -2540,6 +2592,21 @@ def read_atat_fit_out(filename, filter_names = None, i_energy = 1):
 
             e = round(float(vals[i_energy]),4)
             x = float(vals[0])
+            if x > xmax:
+                continue
+            print(x)
+            if x in subs:
+                print(x, 'in subs')
+                if subs[x] == 'skip':
+                    continue
+            if x in subs:
+                print(x, e)
+                e = subs[x]
+                print('substituting with', e)
+
+            if xmax != 1:
+                # print (e_xmax/xmax - e1 + (xmax-1)/xmax * e0)
+                e = e - x * ( e_xmax/xmax - e1 + (xmax-1)/xmax * e0  )
             # print(e)
             # if e in E:
             #     if X[E.index(e)] == x:
@@ -2551,6 +2618,7 @@ def read_atat_fit_out(filename, filter_names = None, i_energy = 1):
             # if count > 10:
             #     count = 0
             X.append(x) # concentrations
+
             E.append(e) # formation energies
             nam.append(name) # names of structures
             count+=1
