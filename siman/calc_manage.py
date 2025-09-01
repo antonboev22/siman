@@ -17,25 +17,23 @@ except:
     print('calc_manage.py: pymatgen is not available')
     pymatgen_flag = False 
 
-if pymatgen_flag:
-    from pymatgen.ext.matproj import MPRester
-    from pymatgen.io.vasp.inputs import Poscar
 
 import siman
 from siman import header
 from siman.header import printlog, runBash
-from siman.small_functions import is_list_like, makedir, list2string, calc_ngkpt, setting_sshpass
+from siman.small_functions import is_list_like, makedir, list2string, setting_sshpass
 from siman.classes import Description
 from siman.core.structure import Structure
 from siman.calculators.vasp import CalculationVasp
 from siman.calculators.aims import CalculationAims
 from siman.calculators.gaussian import CalculationGaussian
+from siman.calculators.atat import setup_atat_step1, setup_atat_step2
 from siman.core.molecule import Molecule
 from siman.core.cluster_run_script import prepare_run, make_run, complete_run
 from siman.core.cluster_batch_script import write_batch_header, write_batch_body
 from siman.analyze.segregation import inloop_segreg_analysis 
 from siman.analyze.segregation import outloop_segreg_analysis 
-
+from siman.core.manage import setup_shiftk_average
 
 from siman.functions import (gb_energy_volume, element_name_inv, get_from_server,  run_on_server, push_to_server, wrapper_cp_on_server)
 from siman.inout import determine_file_format, write_xyz, read_xyz, write_occmatrix, smart_structure_read
@@ -43,7 +41,7 @@ from siman.picture_functions import plot_mep, fit_and_plot, plot_conv
 from siman.analysis import find_polaron, neb_analysis,polaron_analysis, calc_redox, matrix_diff
 from siman.geo import interpolate, replic, image_distance, scale_cell_uniformly, scale_cell_by_matrix, remove_atoms, create_deintercalated_structure, create_antisite_defect, create_antisite_defect2, local_surrounding, find_moving_atom
 from siman.set_functions import init_default_sets
-from siman.database import push_figure_to_archive
+from siman.database import push_figure_to_archive, write_database
 
 from siman.calculators.qe import CalculationQE
 
@@ -209,7 +207,7 @@ def inherit_ngkpt(it_to, it_from, inputset):
     return
 
 
-def choose_cluster(cluster_name, cluster_home, corenum, nodes):
+def choose_cluster(cluster_name, corenum, nodes):
     """
     *cluster_name* should be in header.project_conf.CLUSTERS dict
     nodes - number of nodes
@@ -245,20 +243,17 @@ def choose_cluster(cluster_name, cluster_home, corenum, nodes):
 
 
     #Determine cluster home using ssh
-    # run_on_server('touch ~/.hushlogin', header.cluster_address)
     if header.copy_to_cluster_flag:
-        header.cluster_home = run_on_server('pwd', header.cluster_address)
+        if 'homepath' in clust and clust['homepath']:
+            header.cluster_home = clust['homepath']
+        else:
+            header.cluster_home = run_on_server('pwd', header.cluster_address)
+            clust['homepath'] = header.cluster_home
     else:
         header.cluster_home = ''
     
-    clust['homepath'] = header.cluster_home
 
     printlog('The home folder on cluster is ', header.cluster_home)
-
-    # if cluster_home is None:
-    #     header.cluster_home    = clust['homepath']
-    # else:
-    #     header.cluster_home    = cluster_home
     
 
 
@@ -283,8 +278,11 @@ def choose_cluster(cluster_name, cluster_home, corenum, nodes):
     if nodes is not None:
         clust['nodes'] = nodes
 
+    if header.ABSOLUTE_PATH2PROJECT:
+        header.project_path_cluster = header.PATH2PROJECT
 
-    header.project_path_cluster = header.cluster_home +'/'+ header.PATH2PROJECT
+    else:
+        header.project_path_cluster = header.cluster_home +'/'+ header.PATH2PROJECT
 
     try:
         header.vasp_command = clust['vasp_com']
@@ -301,7 +299,7 @@ def choose_cluster(cluster_name, cluster_home, corenum, nodes):
 
 
 
-def add_loop(it, setlist, verlist, calc = None, varset = None, 
+def add_loop(it = None, setlist = None, verlist = 1, calc = None, varset = None, 
     up = 'up2', inherit_option = None, id_from = None, inherit_args = None, confdic = None,
     i_atom_to_remove = None,
     coord = 'direct', savefile = header.default_savefile, show = '', comment = '', 
@@ -310,6 +308,7 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
     calc_method = None, u_ramping_region = None, it_folder = None, 
     mat_proj_cell = '',
     mat_proj_id = None, 
+    mp_id = None, 
     cee_args = None,
     ise_new = None, it_suffix = None,
     scale_region = None, n_scale_images = 7,
@@ -319,12 +318,12 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
     cluster = None, cluster_home = None,
     override = None,
     ssh_object = None,
-    run = False, check_job  = 1, params = None, mpi = False, copy_to_server = True
+    run = False, check_job  = 1, params = None, mpi = False, copy_to_server = True, update_set = None
     ):
     """
     Main subroutine for creation of calculations, saving them to database and sending to server.
 
-    Input:
+    INPUT:
 
         - it - arbitary name for your crystal structure 
         - setlist (list of str or str) - names of sets with vasp parameters from *varset* dictionary
@@ -375,10 +374,19 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
 
         - it_folder - section folder (sfolder) used in struct_des; here needed with input_geo_format = mat_proj
 
+
+        - mat_proj_cell (str) - ?
+        - mat_proj_id (str) - id in materials project database, e.g. 'mp-100'
+        - mp_id (int) - id in materials project database without mp prefix, automatically turns on structure retrieval from 
+            materials project
+
+
+
         - show - only for read_results() ?.
 
         - comment - arbitrary comment for history.
-
+    
+        - update_set (dict) - allow to update set, the same as params['update_set_dic'] and has higher priority
 
 
         #inherit flags:
@@ -421,13 +429,16 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
             - 'polaron' - polaron hopping, only input_st is supported
                 - put here all parameters
 
-            - 'atat' - create all input for ATAT
+            - 'atat' - create all input for ATAT. If one active atom then maps is started, if two or more then mmaps is started.
                 params['atat']
+                    - 'maps_keys' - this is keys provided to maps or mmaps, default is -d, see maps --help
                     - 'active_atoms' - now dictionary of elements, which can be substituted by what e.g. {'Li':'Vac'}
                     please improve that Li0 can be used, to consider only symmetrically non-equivalent position for this element
-                    - 'exclude_atoms_n' - exclude specific atoms from cluster expansion
+                    - 'exclude_atoms_n' - exclude specific atoms from cluster expansion by providing their numbers
                     - 'subatom' -  a string for choosing different POTCAR, e.g. 's/K/K_pv/g' or 's/K/K_pv/g\nSUBATOM = s/Nb/Nb_pv/g'
-
+                    - 'constraints' (list) - list of constraints, 
+                        e.g. '1.0*Al -1.0*Li +0.1*Co >= 0.5', for magnetic calculations, 
+                        labels should be the same as in lat.in, e.g. Li+1, see mmaps documentation
 
         - u_ramping_region - used with 'u_ramping'=tuple(u_start, u_end, u_step)
 
@@ -463,6 +474,12 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
             - 'nodes' - number of nodes for sqedule system, currently works only for PBS
             - 'init_neb_geo_fld' - path to folder with geo files for NEB in VASP format
 
+            - 'calculator' (str) - vasp, qe, gaussian
+            - shiftk (list of float) - shift of k-mesh (s1,s2,s3), float from 0 to 1
+
+            - upload_parent_chgcar (bool) - if calculation is inherited, this flag allows to upload chgcar to cluster
+
+
     Comments:
         
         !Check To create folders and add calculations add_flag should have value 'add' 
@@ -486,7 +503,7 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
     db = None
 
     def add_loop_prepare():
-
+    
         nonlocal calc, db, it, it_folder, verlist, setlist, varset, calc_method, inherit_args, params, scale_region
 
         if not params:
@@ -494,10 +511,14 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
 
 
         params['show'] = show
+        
+        if update_set:
+            params['update_set_dic'] = update_set
+
         # if header.copy_to_cluster_flag:
         # print(params["nodes"])
 
-        choose_cluster(cluster, cluster_home, corenum, params.get("nodes"))
+        choose_cluster(cluster, corenum, params.get("nodes"))
         
         if run:
             prepare_run()
@@ -514,8 +535,8 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
 
 
 
-
-        it = it.strip()
+        if it:
+            it = it.strip()
         
         if it_folder: 
             it_folder = it_folder.strip()
@@ -785,7 +806,7 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
                     db[cl_temp.id] = cl_temp
                 
                     if ver_new ==2:
-                        cl_temp.write_structure("2.POSCAR") # create it already here, it will copied automatically since all POSCARs are copied             
+                        cl_temp.write_structure("2.POSCAR", coord) # create it already here, it will copied automatically since all POSCARs are copied             
  
             # input_st.write_poscar(cl_temp.dir+'/0.POSCAR')
             # st1.write_poscar(cl_temp.dir+'/1.POSCAR_test')
@@ -796,38 +817,8 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
 
         if 'atat' in calc_method:
 
-            ks = varset[setlist[0]].vasp_params['KSPACING']
-            input_st = input_st.reorder_element_groups(order = 'alphabet') # required for correct work of ATAT
+            setup_atat_step1(varset, setlist, input_st, params)
 
-            N = calc_ngkpt(input_st.get_recip(), ks)
-            # print(N)
-            KPPRA = N[0]*N[1]*N[2]*input_st.natom # here probably symmetry should taken into account? not really good working
-
-            if ks == 0.3:
-                KPPRA = 1200
-            else:
-                KPPRA = 1200
-                printlog('Warning! KPPRA = 1200 for all kspacings! please contact developer to improve or modify this code in calc_manage.py')
-
-            printlog('Atat mode, KPPRA is', KPPRA, imp = 'Y')
-            # sys.exit()
-            exclude_new = []
-            exclude = params['atat'].get('exclude_atoms_n')
-
-            subatom = params['atat'].get('subatom') or None
-            # print(exclude)
-            # sys.exit()
-            if exclude:
-                for i in exclude:
-                    exclude_new.append(input_st.old_numbers.index(i)) # required since the structure was reordered
-                # exclude = exclude_new
-                params['atat']['exclude_atoms_n'] = exclude_new
-
-            params['update_set_dic']={'add_nbands':None, 'USEPOT':'PAWPBE', 'KPPRA':KPPRA, 
-            'MAGATOM':list2string(input_st.magmom), 
-            'MAGMOM':None,
-            'SUBATOM':subatom,
-            'DOSTATIC':''}
 
 
 
@@ -914,7 +905,7 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
                     input_folder = struct_des[it_l].sfolder+'/'+it_l+suf
                     xyz_folder = None
                     # sys.exit()
-
+                printlog('calc_manage: input_folder is', input_folder, imp = '')
 
                 if input_st:
                     st = input_st
@@ -969,11 +960,10 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
                 try:
                     cl_temp = db[id_s].copy()
                 except:
-                    cl_temp = CalculationVasp(varset[inputset], id_s)
-                # print('here', cl_temp.id, )
-                # print(cl_temp.calculator)
-
-                # sys.exit()
+                    if params.get('calculator') == 'qe':
+                        cl_temp = CalculationQE(varset[inputset], id_s)   
+                    else:
+                        cl_temp = CalculationVasp(varset[inputset], id_s)
 
 
 
@@ -998,7 +988,6 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
 
 
                 if 'uniform_scale' in calc_method or 'c_scale' in calc_method:
-                    #print('Create 100')
                     #sys.exit()
                     #make version 100
                     cl_temp.version = 100
@@ -1009,10 +998,15 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
                     # iid = cl_temp.id          
                     cl_temp.name = cl_temp.id[0]+'.'+cl_temp.id[1]+'.'+str(cl_temp.id[2])
                     cl_temp.dir = blockdir+"/"+ str(cl_temp.id[0]) +'.'+ str(cl_temp.id[1])+'/'
-                    cl_temp.path["output"] = cl_temp.dir+str(cl_temp.version)+'.OUTCAR'
+                    if cl_temp.calculator=='qe':
+                        cl_temp.path["output"] = cl_temp.dir+str(cl_temp.version)+'.out'
+                    else:
+                        cl_temp.path["output"] = cl_temp.dir+str(cl_temp.version)+'.OUTCAR'
+                    # print(cl_temp.path["output"])
                     cl_temp.cluster      = header.cluster
                     cl_temp.cluster_address      = header.cluster_address
                     cl_temp.project_path_cluster = header.project_path_cluster
+                    # print(cl_temp.calculator)
                     calc[cl_temp.id] = cl_temp
                     printlog(cl_temp.id, 'was created in database')
                     # sys.exit()
@@ -1038,26 +1032,41 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
         return u_scale_flag, fitted_v100_id
 
 
-
-
-
-
     def add_loop_take_from_database():
 
-        nonlocal input_geo_format, it
+        nonlocal input_geo_format, it, mat_proj_id, it_folder, input_geo_file
 
         mat_proj_st_id = None
+
+        if mp_id:
+            mat_proj_id = 'mp-'+str(mp_id)
+            input_geo_format = 'mat_proj'
+            if not it_folder:
+                it_folder = 'MP/'+it
+
+
+
+
         if mat_proj_id:
             input_geo_format = 'mat_proj'
 
         if input_geo_format == 'mat_proj':
-            printlog("Taking structure "+it+" from materialsproject.org ...", imp = 'Y')
-            if it_folder == None:
-                printlog('Error! Please provide local folder for new ', it, 'structure using *it_folder* argument! ', imp = 'Y')
-            
+            printlog("Taking structure", mat_proj_id,"with it name "+str(it)+" from materialsproject.org ...", imp = 'Y')
+
             st = get_structure_from_matproj(it, it_folder, verlist[0], mat_proj_cell, mat_proj_id)
+            if it is None:
+                it = st.it
+                printlog("Giving name "+str(it), imp = 'Y')
+            if it_folder == None:
+                it_folder = st.it_folder
+                printlog('Warning! The local folder for new ', it, 'structure is ',it_folder,'if you need to change use *it_folder* argument! ', imp = 'Y')
+            
+
+
             mat_proj_st_id = st.mat_proj_st_id
             input_geo_file = st.input_geo_file
+            # print(st.input_geo_file)
+            # sys.exit()
             input_geo_format = 'vasp'
 
         elif input_geo_format == 'cee_database':
@@ -1067,6 +1076,7 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
 
             get_structure_from_cee_database(it, it_folder, verlist[0], **cee_args) #will transform it to vasp
             input_geo_format = 'vasp'
+        
         return mat_proj_st_id
 
 
@@ -1238,55 +1248,66 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
             # print (fitted_v100_id, calc[fitted_v100_id].associated_outcars)
             # sys.exit()
 
-        if ise_new and hasattr(varset[ise_new], 'k_band_structure') and varset[ise_new].k_band_structure: #copy chgcar
-            
+        if ise_new and ( (hasattr(varset[ise_new], 'k_band_structure') and varset[ise_new].k_band_structure)
+                      or (hasattr(varset[ise_new], 'k_effective_mass') and varset[ise_new].k_effective_mass) ): #copy chgcar
             # calc[id_base].path["charge"]
-            printlog('Copying CHGCAR for band structure', imp = 'y')
+            printlog('Copying CHGCAR for band structure/effective mass', imp = 'y')
             # print('calc_manage.py, string 1664, calc[id_base].path["charge"] ', calc[id_base].path["charge"])
             if copy_to_server: 
                 wrapper_cp_on_server(calc[id_base].path["charge"], header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'CHGCAR')
             else:
-                shutil.copy(os.getcwd()+'/'+calc[id_base].path["charge"], calc[id].dir + '/CHGCAR')
+                ''
+                # shutil.copy(os.getcwd()+'/'+calc[id_base].path["charge"], calc[id].dir + '/CHGCAR') # do we need this?
 
+        # print(copy_to_server)
+        # sys.exit()
         if inherit_option  == 'full_chg':
 
             # cl.path["charge"] = cl.path["output"].replace('OUTCAR', 'CHGCAR')
             # print(calc[id_base].path)
-            printlog('Copying CHGCAR ...', imp = 'y')
             if copy_to_server:
+                printlog('Copying CHGCAR on cluster ...', imp = 'y')
                 wrapper_cp_on_server(calc[id_base].path["charge"], header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'CHGCAR')
             else:
                 pass
+        
+
+
         if inherit_option  == 'optic':
-            printlog('Copying WAVECAR ...', imp = 'y')
             if copy_to_server:
+                printlog('Copying WAVECAR  on cluster ...', imp = 'y')
                 wrapper_cp_on_server(calc[id_base].path["output"].replace('WAVECAR'), header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'WAVECAR')
             else:
                 pass
         
         if inherit_option  == 'full_wave':
-            printlog('Copying WAVECAR ...', imp = 'y')
             if copy_to_server:
+                printlog('Copying WAVECAR  on cluster ...', imp = 'y')
+
                 wrapper_cp_on_server(calc[id_base].path["output"].replace('OUTCAR','WAVECAR'), header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'WAVECAR')
             else:
                 pass
 
         if inherit_option  == 'band_hse':
-            printlog('Copying WAVECAR ...', imp = 'y')
             if copy_to_server:
+                printlog('Copying WAVECAR  on cluster ...', imp = 'y')
+
                 wrapper_cp_on_server(calc[id_base].path["output"].replace('WAVECAR'), header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'WAVECAR')
             else:
                 pass
 
         if inherit_option  == 'optic_loc':
-            printlog('Copying WAVECAR ...', imp = 'y')
             if copy_to_server:
+                printlog('Copying WAVECAR ...', imp = 'y')
+    
                 wrapper_cp_on_server(calc[id_base].path["output"].replace('WAVECAR'), header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'WAVECAR')
             else:
                 pass
 
             printlog('Copying WAVEDER ...', imp = 'y')
             if copy_to_server:
+                printlog('Copying WAVECAR ...', imp = 'y')
+
                 wrapper_cp_on_server(calc[id_base].path["output"].replace('WAVEDER'), header.project_path_cluster + '/' + calc[id].dir + '/', new_filename = 'WAVEDER')       
             else:
                 pass
@@ -1307,6 +1328,10 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
             complete_run() # for IPython notebook
             printlog(run_on_server('./run', header.CLUSTER_ADDRESS), imp= 'Y' )
             printlog('To read results use ', hstring, '; possible options for show: fit, fo, fop, en, mag, magp, smag, maga, occ, occ1, mep, mepp', imp = 'Y')
+
+        if header.AUTO_UPDATE_DB:
+            write_database()
+
 
         return u_scale_flag
 
@@ -1359,7 +1384,6 @@ def add_loop(it, setlist, verlist, calc = None, varset = None,
            
             blockdir = header.struct_des[it].sfolder+"/"+varset[inputset].blockfolder #calculation folder
 
-
             add_calculation(it,inputset,v, verlist[0], verlist[-1], 
                 input_folder, blockdir, calc, varset, up, 
                 inherit_option, prevcalcver, coord, savefile, input_geo_format, input_geo_file, 
@@ -1400,15 +1424,21 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
     mpi = False, corenum = None):
     """
 
-    schedule_system - type of job scheduling system:'PBS', 'SGE', 'SLURM', 'none'
+    INPUT:
+        See description at add()
 
-    prevcalcver - version of previous calculation in verlist
+        - schedule_system - type of job scheduling system:'PBS', 'SGE', 'SLURM', 'none'
 
-    output_files_names - the list is updated on every call
+        - prevcalcver - version of previous calculation in verlist
 
-    if inherit_option == 'continue' the previous completed calculation is saved in cl.prev list
+        - output_files_names - the list is updated on every call
 
-    input_st (Structure) - Structure object can be provided instead of input_folder and input_geo_file, has highest priority
+        - if inherit_option == 'continue' the previous completed calculation is saved in cl.prev list
+
+        - input_st (Structure) - Structure object can be provided instead of input_folder and input_geo_file, has highest priority
+
+        - params (dict) - the dict with additional arguments, see add() description
+
 
 
     TODO:
@@ -1457,97 +1487,6 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
         return file
 
 
-    def write_lat_in(st, params):
-        file = cl.dir +  'lat.in'
-        to_ang = 1
-        rprimd = st.rprimd
-        with open(file, 'w') as f:
-            for i in 0, 1, 2:
-                f.write('{:10.6f} {:10.6f} {:10.6f}\n'.format(rprimd[i][0]*to_ang,rprimd[i][1]*to_ang,rprimd[i][2]*to_ang) )
-                # f.write("\n")
-            f.write(' 1 0 0\n 0 1 0\n 0 0 1\n')
-
-            active_atoms = params['atat']['active_atoms'] #dict
-            
-            exclude = params['atat'].get('exclude_atoms_n') or []
-            
-            subs = []
-
-            active_numbers = []
-            subs_dict    = {}
-            active_elements = []
-            for el in set(st.get_elements()):
-                for elan in active_atoms:
-                    
-                    if el not in elan:
-                        continue
-
-
-                    # print(elan)
-                    active_elements.append(el)
-                    elann = re.split('(\d+)',elan)
-                    print('Exctracting symmetry position of Na ', elann)
-                    if len(elann) > 2:
-                        ela = elann[0]
-                        isym   = int(elann[1])
-                    else:
-                        ela = elann[0]
-                        isym = None
-                    if isym:
-                        natoms = st.determine_symmetry_positions(el)
-                        a_numbers = natoms[isym-1]
-                    else:
-                        a_numbers = st.get_numbers(el)
-            
-                    for i in a_numbers:
-                        subs_dict[i] = active_atoms[elan]
-                    
-                    active_numbers.extend(a_numbers)
-            # print(active_numbers)
-            # sys.exit()
-
-
-            # st.printme()
-            # sys.exit()
-
-
-            for i, el in enumerate(st.get_elements()):
-                if i not in exclude and i in active_numbers:
-                    # print(el, i, st.xred[i])
-                    subs.append(subs_dict[i])
-                else:
-                    subs.append(None)
-
-            print(subs)
-            # print(st.magmom)
-
-            if None in st.magmom:
-                magmom = st.natom*['']
-            else:
-                magmom = st.magmom
-
-            # print(magmom)
-            for x, el, sub, m in zip(st.xred, st.get_elements(), subs, magmom):
-                # if el == 'O':
-                #     m = 0
-                # print(m)
-                if abs(m) < 0.1:
-                    m = 0
-                # print(m, '{:+.0f}'.format(m))
-                f.write('{:10.6f} {:10.6f} {:10.6f} {:s}{:+.0f}'.format(*x, el, m))
-                
-                if sub:
-                    f.write(','+sub)
-                f.write("\n")
-
-        #highlight active atoms
-        st_h = st.replace_atoms(active_numbers, 'Pu')
-        st_h.write_poscar()
-        printlog('Check active atoms', imp = 'y')
-
-
-
-        return file
 
     struct_des = header.struct_des
 
@@ -1574,7 +1513,13 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
         printlog('add_calculation():',str(calc[id].name), " has been already created and has state: ", str(calc[id].state),)# imp = 'y')
 
         # print(cl.state)
-
+        if hasattr(cl, 'run_flag') and cl.run_flag:
+            printlog('Warning! This calculation was already submitted. Use run = 2 to submit it again')
+            if run == 2:
+                printlog('Warning! run = 2, the calculation is resubmitted' )
+            else:
+                printlog('Bye-bye!', imp = 'y')
+                return
 
         if check_job:
             res_params = params.get('res_params') or {}
@@ -1610,8 +1555,6 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
         printlog( "There is no calculation with id "+ str(id)+". I create new with set "+str(inputset)+"\n" )        
 
 
-
-
     if "up" in up:
 
         header.close_run = True
@@ -1626,29 +1569,25 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
             cl_prev = copy.deepcopy(calc[id])
 
 
-
-
         if params.get('calculator'):
             if params.get('calculator') == 'aims':
-                cl = CalculationAims( varset[id[1]] )
+                cl = CalculationAims(varset[id[1]])
 
             elif params.get('calculator') == 'qe':
-                'Quantum Espresso'
-                cl = CalculationQE( varset[id[1]] )
+                # 'Quantum Espresso'
+                cl = CalculationQE(varset[id[1]])
         else:
-
             if input_st and isinstance(input_st, Molecule):
-                params['calculator'] = 'gaussian' # for molecules uses Gaussian by default
+                # for molecules uses Gaussian by default
+                params['calculator'] = 'gaussian'
                 # print(type(input_st))
-                cl = CalculationGaussian( varset[id[1]] )
-
+                cl = CalculationGaussian(varset[id[1]])
                 # sys.exit()
-
-
             else:
-                #by default Vasp
-                cl = CalculationVasp( varset[id[1]] )
-        
+                # by default Vasp
+                cl = CalculationVasp(varset[id[1]])
+
+
 
 
 
@@ -1658,7 +1597,7 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
         cl.id = id 
         cl.name = str(id[0])+'.'+str(id[1])+'.'+str(id[2]) # 
         cl.dir = blockdir+'/'+ str(id[0]) +'.'+ str(id[1])+'/'
-        
+        cl.run_flag = run 
 
         batch_script_filename = cl.dir +  cl.id[0]+'.'+cl.id[1]+'.run'        
 
@@ -1679,6 +1618,22 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
                 input_geo_format = input_geo_format, input_geo_file = input_geo_file)
 
 
+        #check volume
+        if cl.init.get_volume() < 0:
+            ''
+            printlog(f'Error! The volume of unitcell is negative = {cl.init.get_volume():.2f} A^3! Check your input structure.')
+
+
+
+        #pass using object
+        # if header.copy_to_cluster_flag:
+        cl.cluster_address      = header.cluster_address
+        cl.project_path_cluster = header.project_path_cluster
+        cl.cluster_home = header.cluster_home
+        cl.corenum = header.corenum 
+        cl.schedule_system = header.schedule_system
+        cl.cluster = header.cluster
+        cl.params = params
 
         setseq = [cl.set]                                                                                                    
         if hasattr(cl.set, 'set_sequence') and cl.set.set_sequence:
@@ -1688,6 +1643,7 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
         for curset in setseq:
             if len(setseq) > 1:
                 printlog('sequence set mode: set', curset.ise,':', end = '\n')
+            # print(params['update_set_dic'])
             curset.load(params['update_set_dic'], inplace = True)
             cl.actualize_set(curset, params = params)
 
@@ -1708,15 +1664,7 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
 
 
 
-        #pass using object
-        # if header.copy_to_cluster_flag:
-        cl.cluster_address      = header.cluster_address
-        cl.project_path_cluster = header.project_path_cluster
-        cl.cluster_home = header.cluster_home
-        cl.corenum = header.corenum 
-        cl.schedule_system = header.schedule_system
-        cl.cluster = header.cluster
-        cl.params = params
+
 
         if mat_proj_st_id:
             cl.mat_proj_st_id = mat_proj_st_id
@@ -1733,22 +1681,21 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
 
         if up in ['up1', 'up2', 'up3']:
             if not os.path.exists(cl.dir):
+                printlog('calc_manage.add_calculation() 1731: Creating local directory', cl.dir)
                 os.makedirs(cl.dir)
                 if header.copy_to_cluster_flag:
-                    run_on_server("mkdir -p "+cl.dir, addr = cl.cluster_address)
+                    'seems not needed'
+                    # print('calc_manage.add_calculation() 1731: Creating remote directory', cl.dir, 'at', cl.cluster_address)
+                    # run_on_server("mkdir -p "+cl.dir, addr = cl.cluster_address)
 
             if id[2] == first_version:
-                write_batch_header(cl, batch_script_filename = batch_script_filename,
+                path_to_job, scrdir = write_batch_header(cl, batch_script_filename = batch_script_filename,
                     schedule_system = cl.schedule_system, 
                     path_to_job = header.project_path_cluster+'/'+cl.dir, 
                     job_name = cl.id[0]+"."+cl.id[1], corenum = corenum  )
+                header.temp['path_to_job'] = path_to_job
+                header.temp['scrdir'] = scrdir
 
-
-
-
-
-        # print(cl.init.printme())
-        # sys.exit()
 
         if cl.path["input_geo"]:
 
@@ -1784,10 +1731,9 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
         cl.des = ' '+struct_des[id[0]].des + '; ' + varset[id[1]].des
 
 
+        # print() 
 
-
-
-        cl.check_kpoints()    
+        cl.check_kpoints(params.get('ngkpt'))    
 
 
         if up in ['up1', 'up2', 'up3']:
@@ -1812,8 +1758,9 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
 
 
 
-            if id == id_first:
+            if id == id_first or cl.calculator == 'qe':
                 path_to_potcar = cl.add_potcar()
+            
             
             for curset in setseq: #for each set
                 cl.calculate_nbands(curset, calc[id_first].path['potcar'], params = params)
@@ -1855,7 +1802,7 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
                 
                 write_batch_body(cl, mode = 'footer', schedule_system = cl.schedule_system, option = inherit_option, 
                     output_files_names = output_files_names, batch_script_filename = batch_script_filename, savefile = savefile, 
-                    mpi = mpi, corenum = corenum )
+                    mpi = mpi, corenum = corenum, path_to_job = header.temp['path_to_job'], scrdir = header.temp['scrdir'] )
                 
                 list_to_copy.extend( cl.make_incar() )
                 
@@ -1863,21 +1810,41 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
 
                 list_to_copy.append(batch_script_filename)
                 
+                if params.get('upload_parent_chgcar'):
+
+                    path_charge = cl.dir + '/CHGCAR'
+                    shutil.copy(params['cl_parent'].path['charge'], path_charge)
+                    printlog('I include parent chgcar for upload:', params['cl_parent'].path['charge'], 'file renamed to CHGCAR; no copy on cluster will be attemted.', imp = 'y')
+                    # sys.exit()
+                    list_to_copy.append(path_charge)
+                
+                elif params.get('chgcar'):
+                    if not os.path.exists(params['chgcar']):
+                        printlog("Error! provided chgcar is missing!", params['chgcar'])
+                    path_charge = cl.dir + '/CHGCAR'
+                    shutil.copy(params['chgcar'], path_charge)
+                    printlog('I include provided chgcar for upload:', params['chgcar'], 'and rename to CHGCAR', imp = 'y')
+                    list_to_copy.append(path_charge)
+
+                if params.get('wavecar'):
+                    if not os.path.exists(params['wavecar']):
+                        printlog("Error! provided wavecar is missing!", params['wavecar'])
+                    path_wavecar = cl.dir + '/WAVECAR'
+                    shutil.copy(params['wavecar'], path_wavecar)
+                    printlog('I include provided wavecar for upload:', params['wavecar'], 'and rename to WAVECAR', imp = 'y')
+                    list_to_copy.append(path_wavecar)
 
 
                 if 'atat' in cl.calc_method:
-                    lat_in = write_lat_in(cl.init, params)
-                    list_to_copy.append(lat_in)
-                    wrap = cl.dir+'/vasp.wrap'
-                    shutil.copyfile(cl.dir+'/INCAR', wrap)
 
-                    with open(wrap, "r") as fwr:
-                        wrap_cont = fwr.readlines()
+                    setup_atat_step2(cl, params, list_to_copy)
 
-                    with open(wrap, "w") as fwr:
-                        fwr.write("[INCAR]\n"+"".join(wrap_cont[1:])) # remove first line with SYSTEM tag - not working in ATAT for some reason
+                elif 'shiftk_average' in cl.calc_method:
 
-                    list_to_copy.append(wrap)
+                    setup_shiftk_average(cl, params, list_to_copy)
+
+
+
 
 
 
@@ -2464,6 +2431,9 @@ def inherit_icalc(inherit_type, it_new, ver_new, id_base, calc = None, st_base =
     if isinstance(st, Structure):
         new.write_geometry('init', des, override = override)
         printlog('Write_geometry using VASP object, please make more general', imp = 'n')
+
+
+
     if geo_folder:
         st.write_xyz(filename=geo_folder + '/' + it_new+"/"+it_new+'.inherit.'+inherit_type+'.'+str(ver_new))
     else:
@@ -2484,77 +2454,56 @@ def inherit_icalc(inherit_type, it_new, ver_new, id_base, calc = None, st_base =
 
 
 
+def res_loop(it, setlist, verlist, analys_type = None,
+    up = "up1", readfiles = True, show = 'fomag', 
+    it_suffix = None,
+    choose_outcar = None, 
+    push2archive = False,
+    cluster = None, 
+    check_job = 1, 
+    params = None, 
+    log_flag = True,
+    **args):
+    """
+    Read results of calculation with id (it, ise, v), where ise and v are taken from setlist and verlist
+    
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'no', b_id = None, 
-    typconv='', up = "", imp1 = None, imp2 = None, matr = None, voronoi = False, r_id = None, readfiles = True, plot = True, show = 'fomag', 
-    comment = None, input_geo_format = None, savefile = None, energy_ref = 0, ifolder = None, bulk_mul = 1, inherit_option = None,
-    calc_method = None, u_ramping_region = None, input_geo_file = None, corenum = None, run = None, input_st= None,
-    ortho = None, mat_proj_cell = None, ngkpt = None, it_suffix = None,
-    it_folder = None, choose_outcar = None, choose_image = None, 
-    cee_args = None, mat_proj_id = None, ise_new = None, push2archive = False,
-    description_for_archive = None, old_behaviour  = False,
-    alkali_ion_number = None, cluster = None, ret = None, override = None, check_job = 1, fitplot_args = None, style_dic = None, params = None):
-    """Read results
     INPUT:
-        
-        'analys_type' - ('gbe' - calculate gb energy and volume and plot it. b_id should be appropriete cell with 
-           
-            bulk material,
-            'e_imp' ('e_imp_kp', 'e_imp_ecut') - calculate impurity energy - just difference between cells with impurity and without.
-            'fit_ac' - fit a and c lattice constants using 2-dimensianal spline
-            'clusters' - allows to calculate formation energies of clusters
-            'diff' - difference of energies in meV, and volumes A^3; E(id) - E(b_id)
-            'matrix_diff' - difference normalized by matrix atoms
+        - it - name for your crystal structure in local database db
+        - setlist (list of str or str) - names of sets with vasp parameters from *varset* dictionary
+        - verlist - list of versions of calculations
 
-            'redox_pot' - calculate redox potential relative to b_id() (deintercalated cathode) and energy_ref ( energy per one ion atom Li, Na in metallic state or in graphite)
-            'neb' - make neb path. The start and final configurations 
-            should be versions 1 and 2, the intermidiate images are starting from 3 to 3+nimages
+        - 'analys_type' 
+            - 'gbe' - calculate gb energy and volume and plot it. b_id should be appropriete cell with bulk material,
+            - 'e_imp' ('e_imp_kp', 'e_imp_ecut') - calculate impurity energy - just difference between cells with impurity and without.
+            - 'fit_ac' - fit a and c lattice constants using 2-dimensianal spline
+            - 'clusters' - allows to calculate formation energies of clusters
+            - 'diff' - difference of energies in meV, and volumes A^3; E(id) - E(b_id)
+            - 'matrix_diff' - difference normalized by matrix atoms
+            - 'redox_pot' - calculate redox potential relative to b_id() (deintercalated cathode) and energy_ref ( energy per one ion atom Li, Na in metallic state or in graphite)
+            - 'neb' - make neb path. The start and final configurations 
+                should be versions 1 and 2, the intermidiate images are starting from 3 to 3+nimages
+            - 'xcarts' - ?
+            - 'atat' - allows to read atat calculations, use params['n_atat'] to read results for calculation n; 
 
-            'xcarts'
-            )
-        
-        voronoi - True of False - allows to calculate voronoi volume of impurities and provide them in output. only if lammps is installed
-        b_id - key of base calculation (for example bulk cell), used in several regimes; 
-        r_id - key of reference calculation; defines additional calculation (for example atom in vacuum or graphite to calculate formation energies); can contain directly the energy per one atom
+        - up (str):
+            - 'up1' - just read local output files. If files are missing, they will be attempted for download from cluster
+            - 'up2' - download output files from cluster , overwrite local files, and read them
+            - 'un' - try to read output, even when calculation was finished with error, but the correct version exist e.g. 1.OUTCAR
+            - 'un2' - try to read output when the running script was killed, and only output with original name exists, e.g. OUTCAR
 
-        up - 
-            
-            if equal to 'up2' the files are redownloaded; also can be used to download additional files can be 'xo' (deprecated?)
-            - if 'un' is found in up then siman will try to read unfinished outcars
-
-
-        readfiles (bool) - True - read from outcar, False - read from database; 
-
-
-
-        The next three used for 'clusters' regime:    
-        imp1 - key of bulk cell with one imp1
-        imp2 - key of bulk cell with one imp2
-        matr - key of bulk cell with pure matrix.
-
+        - readfiles (bool) - True - read from outcar, False - read from database; 
 
         - show - (str), allows to show additional information:
-            
+            - mep - save mep
+            - mepp - show mep
+            - neb_noxyz - do not write xyz files
+            - neb_geo - write geo files in neb regime
+            - neb_geo2 - more information about neb, such as distances
+            - neb_rms  - show rms distances for moving 
+            - neb_born - born barrier
             - mag - magnetic moments on magnetic atoms
               maga
-                *alkali_ion_number* (int) - number of atom around which to sort mag moments from 1
             - en  - convergence of total energy vs max force
             - mep - neb path
             - fo  - max force on each md step
@@ -2574,38 +2523,62 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
             - fit - save figure and show volume scan and fit in case of *analys_type* = 'fit_a'
             - fitns - save figure of volume scan and fit in case of *analys_type* = 'fit_a'
 
-        energy_ref - energy in eV; substracted from energy diffs
-        
-        bulk_mul - allows to scale energy and volume of bulk cell during calculation of segregation energies
+        - it_suffix (str) - additional suffix for name, for compatibility
 
-        choose_outcar (int, starting from 1)- if calculation have associated outcars, you can check them as well, by default
-        the last one is used during creation of calculation in write_batch_body()
-
-        choose_image (int) - relative to NEB, allows to choose specific image for analysis, by default the middle image is used
-
+        - choose_outcar (int, starting from 1)- if calculation have associated outcars, you can check them as well, by default
+            the last one is used during creation of calculation in write_batch_body()
         - push2archive (bool) - if True produced images are copied to header.project_conf.path_to_images
-        - description_for_archive - caption for images
+        - cluster (str) - name of cluster, used to override current cluster name to download output from the provided one
+        - check_job - (bool) check status on server, use 0 if no internet connection
+        - log_flag (bool) - if False, the logs "is unfinished; return \{\} []" will not be shown; used for band_structure/non_self_consist_calc
 
-        ret (str) - return some more information in results_dic
-            
-            'energies' - just list of full energies
+
         
-        check_job - (bool) check status on server, use 0 if no internet connection
-
-        fitplot_args - additional arguments for fit_and_plot function
-
-        style_dic - passed to plot_mep()
-
-        - ise_new - dummy
-        - inherit_option - dummy
-        - savefile - dummy
-        - cluster - used to override cluster name
-        - override - dummy
-        
-        - params - dictionary of additional parameters to control internal, many arguments could me moved here 
+        - params (dict) - dictionary of additional parameters controlling res_loop and subroutins
             
-            'mep_shift_vector' - visualization of mep in xyz format
-            'charge' (int) - charge of cell, +1 removes one electron
+            - 'mep_shift_vector' - visualization of mep in xyz format
+            - 'charge' (int) - charge of cell, +1 removes one electron
+
+
+            ATAT related:
+            - 'n_atat' - number of structure to read
+
+
+            Somewhat depreacated and used for special regimes. Should be refined and regrouped.
+            - voronoi - True of False - allows to calculate voronoi volume of impurities and provide them in output. only if lammps is installed
+            - b_id - key of base calculation (for example bulk cell), used in several regimes; 
+            - r_id - key of reference calculation; defines additional calculation (for example atom in vacuum or graphite to calculate formation energies); can contain directly the energy per one atom
+
+
+            - description_for_archive - caption for images
+            - ret (str) - return more information in results_dic
+                - 'energies' - just list of full energies
+            - energy_ref - energy in eV; substracted from energy diffs
+            - bulk_mul - allows to scale energy and volume of bulk cell during calculation of segregation energies
+
+
+            The next three used for 'clusters' regime of 'analys_type' :    
+            - imp1 - key of bulk cell with one imp1
+            - imp2 - key of bulk cell with one imp2
+            - matr - key of bulk cell with pure matrix.
+
+            - alkali_ion_number (int) - number of atom around which to sort mag moments from 1
+            - choose_image (int) - correspons to NEB, allows to choose specific image for analysis, by default the middle image is used
+            - fitplot_args - additional arguments for fit_and_plot function
+            - style_dic - passed to plot_mep()
+            
+
+            Dummies: were used to allow running res() with the same arguments as were used for add(), can be removed probably
+            - ise_new - dummy
+            - inherit_option - dummy
+            - savefile - dummy
+            - override - dummy
+            and see just below
+        
+
+        **args - just any args allowing to rename add to res
+
+
     RETURN:
         
         (results_dic,    result_list)
@@ -2616,19 +2589,62 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
         results_dic - should be used in current version! actually once was used as list, now should be used as dict
 
     TODO:
-    
-        
         Make possible update of b_id and r_id with up = 'up2' flag; now only id works correctly
 
+    AUTHOR:
+        Aksyonov Dmitry
 
     """
 
+    if params is None:
+        params = {}
 
-    """Setup"""
+    if analys_type is None:
+        analys_type = ''
+
+    p = params
+
+    voronoi = p.get('voronoi') or False   
+    b_id = p.get('b_id') or None  
+    r_id = p.get('r_id') or None  
+    ret = p.get('ret') or None   
+    energy_ref = p.get('energy_ref') or 0   
+    bulk_mul = p.get('bulk_mul') or 1   
+    typconv = p.get('typconv') or None
+    imp1 = p.get('imp1') or None   
+    imp2 = p.get('imp2') or None   
+    matr = p.get('matr') or None   
+    alkali_ion_number = p.get('alkali_ion_number') or None  
+    choose_image = p.get('choose_image') or None   
+    fitplot_args = p.get('fitplot_args') or None   
+    style_dic = p.get('style_dic') or None   
+    description_for_archive = p.get('description_for_archive') or None   
+    old_behaviour = p.get('old_behaviour') or False  
+    ise_new = p.get('ise_new') or None #dummy, not needed  
+    inherit_option = p.get('inherit_option') or None #dummy, not needed  
+    savefile = p.get('savefile') or None #dummy, not needed   
+    override = p.get('override') or None #dummy, not needed   
+    comment = p.get('comment') or None #dummy, not needed   
+    input_geo_format = p.get('input_geo_format') or None #dummy, not needed   
+    ifolder = p.get('ifolder') or None #dummy, not needed   
+    calc_method = p.get('calc_method') or None #dummy, not needed   
+    u_ramping_region = p.get('u_ramping_region') or None #dummy, not needed   
+    input_geo_file = p.get('input_geo_file') or None #dummy, not needed   
+    corenum = p.get('corenum') or None #dummy, not needed   
+    run = p.get('run') or None #dummy, not needed   
+    input_st = p.get('input_st') or None #dummy, not needed  
+    ortho = p.get('ortho') or None #dummy, not needed   
+    mat_proj_cell = p.get('mat_proj_cell') or None #dummy, not needed   
+    ngkpt = p.get('ngkpt') or None #dummy, not needed  
+    it_folder = p.get('it_folder') or None #dummy, not needed  
+    cee_args = p.get('cee_args') or None #dummy, not needed   
+    mat_proj_id = p.get('mat_proj_id') or None #dummy, not needed  
+    plot = p.get('plot') or True #dummy, not needed  
+
+
+
 
     from siman.picture_functions import plt
-
-
 
     if not is_list_like(verlist):
         verlist = [verlist]
@@ -2636,10 +2652,9 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
     if not is_list_like(setlist):
         setlist = [setlist]
 
-
-    if not calc:
-        calc = header.calc
-        db = header.db
+    # if not calc:
+    calc = header.calc
+    db = header.db
 
 
 
@@ -2737,54 +2752,67 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
 
 
     """Amendmend required before main loop """
-    if analys_type == 'atat' and choose_outcar is not None:
-        
-
-        i = choose_outcar
+    if analys_type == 'atat':
         v = verlist[0]
         ise = setlist[0]
         idd = (it, ise, v)
         cl = db[idd]
-        fit = cl.get_file('fit.out', root = 1, up = up)
-        fit = cl.get_file('predstr.out', root = 1, up = up)
-        fit = cl.get_file('gs.out', root = 1, up = up)
-        
-        # print(fit)
-        fit_i_e = {} # dic, where concentration is a key
-        with open(fit, 'r') as f:
-            # lines = f.readlines()
-            for line in f:
-                # print(line)
-                x = float(line.split()[0])
-                k = int(line.split()[-1])
-                e = float(line.split()[1]) # dft energy
-                # print(x)
-                if x not in fit_i_e:
-                    fit_i_e[x] = []
-                fit_i_e[x].append( (k, e) )
-        # print(fit_i_e)
-        fit_i_min = {}
-        for key in fit_i_e:
-            i_e = sorted(fit_i_e[key], key=lambda tup: tup[1]) 
-            # print(i_e)
-            fit_i_min[key] = i_e[0][0]
-
-        # print(fit_i_min)
-        xs = sorted(fit_i_min.keys())
-        print("I read lowest energy configurations for the following concentration of vacancies", xs, 'They are availabe as' )
-        verlist = []
-        choose_outcar = None
-        for x in xs:
-            i = fit_i_min[x]
-            idd_new = (it, ise, i)
-            print(x,':db['+str(idd_new)+'], ')
+        i = params.get('n_atat') 
+        # print('i is', i)
+        if i is not None:
+            idd_new = (it, setlist[0], i)
+            v = verlist[0]
+            printlog('I create new calc at db['+str(idd_new)+'], ', imp = 'y')
             if i != v:
                 db[idd_new] = cl.copy(idd_new)
                 db[idd_new].update_name()
             db[idd_new].path['output'] = db[idd_new].dir+'/'+str(i)+'/OUTCAR.static'
             # print(db[idd_new].path['output'])
-            verlist.append(i)
-            # print(db[idd_new].id)
+            verlist.append(i)     
+
+
+        else:
+            i = choose_outcar
+            fit = cl.get_file('fit.out', root = 1, up = up)
+            fit = cl.get_file('predstr.out', root = 1, up = up)
+            fit = cl.get_file('gs.out', root = 1, up = up)
+            
+            # print(fit)
+            fit_i_e = {} # dic, where concentration is a key
+            with open(fit, 'r') as f:
+                # lines = f.readlines()
+                for line in f:
+                    # print(line)
+                    x = float(line.split()[0])
+                    k = int(line.split()[-1])
+                    e = float(line.split()[1]) # dft energy
+                    # print(x)
+                    if x not in fit_i_e:
+                        fit_i_e[x] = []
+                    fit_i_e[x].append( (k, e) )
+            # print(fit_i_e)
+            fit_i_min = {}
+            for key in fit_i_e:
+                i_e = sorted(fit_i_e[key], key=lambda tup: tup[1]) 
+                # print(i_e)
+                fit_i_min[key] = i_e[0][0]
+
+            # print(fit_i_min)
+            xs = sorted(fit_i_min.keys())
+            printlog("I read lowest energy configurations for the following concentration of vacancies", xs, 'They are availabe as', imp = 'y' )
+            verlist = []
+            choose_outcar = None
+            for x in xs:
+                i = fit_i_min[x]
+                idd_new = (it, ise, i)
+                printlog(x,':db['+str(idd_new)+'], ', imp = 'y')
+                if i != v:
+                    db[idd_new] = cl.copy(idd_new)
+                    db[idd_new].update_name()
+                db[idd_new].path['output'] = db[idd_new].dir+'/'+str(i)+'/OUTCAR.static'
+                # print(db[idd_new].path['output'])
+                verlist.append(i)
+                # print(db[idd_new].id)
 
 
     # if analys_type == 'monte':
@@ -2814,7 +2842,8 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
             
             if readfiles and check_job:
                 if '3' in cl.check_job_state():
-                    printlog( cl.name, 'has state:',cl.state,'; I will continue', cl.dir, imp = 'y')
+                    if log_flag:
+                        printlog( cl.name, 'has state:',cl.state,'; I will continue', cl.dir, imp = 'y')
                     # cl.res()
                     continue
 
@@ -2926,6 +2955,17 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
                 # sys.exit()
 
 
+            if cl.calc_method and 'shiftk_average' in cl.calc_method:
+                file = cl.get_file('ENERGIES', up='up2')
+                # print(file)
+                shiftk_energies = []
+                with open(file, 'r') as f:
+                    for line in f:
+                        # print(line)
+                        shiftk_energies.append(float(line.split()[-1]))
+                cl.shiftk_energies = shiftk_energies
+                # print(energies)
+                # print(len(cl.shiftk_energies))
 
 
 
@@ -2936,10 +2976,31 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
 
             
             if readfiles:
-                printlog('Starting self.read_results() ...')
-                outst = cl.read_results(loadflag, analys_type, voronoi = voronoi, show = show, 
-                    choose_outcar = choose_outcar, alkali_ion_number = alkali_ion_number)
-                
+
+                if header.PARSE_OUTPUT_ON_CLUSTER:
+                    # new  regime to parse output on cluster, improve! 1. parse on cluster, 2. create pickle on cluster, 3. download pickle. 4. deserilize pickle
+                    path = os.path.dirname(path_to_outcar)
+                    out =  os.path.basename(path_to_outcar)
+                    script = """
+                    cd path; python3 '
+                    from siman.calculator.vasp import CalculationVasp
+                    cl = CalculationVasp(output = out)
+                    cl.read_results() #load = load, out_type = out_type, show = show, voronoi = voronoi,             path_to_outcar = path_to_outcar, path_to_contcar = path_to_contcar
+                    file = cl.serialize()
+                    print(file)
+                    '  
+                    """
+                    pickle_file = run_on_server(script, header.cluster_address)
+                    file = pickle_file
+                    cl.get_file(os.path.basename(file), up = load) # download file
+                    cl.deserialize(local_pickle_file)
+
+                else:
+                    # old normal regime
+                    printlog('Starting self.read_results() ...')
+                    outst = cl.read_results(loadflag, analys_type, voronoi = voronoi, show = show, 
+                        choose_outcar = choose_outcar, alkali_ion_number = alkali_ion_number)
+                    
                 if '5' in cl.state:
                     continue
 
@@ -2977,7 +3038,7 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
             if not hasattr(cl, 'calculator'):
                cl.calculator = 'vasp' 
             
-            if cl.calculator == 'vasp':
+            if cl.calculator == 'vasp' or cl.calculator =='qe':
                 e   = cl.energy_sigma0
             else:
                 e = 0
@@ -3019,9 +3080,9 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
         results_dic = {} #if some part fill this list it will be returned instead of final_outstring
         if ret == 'energies':
             results_dic[ret] = energies
-
+    
         cl = calc[id]
-
+        # print(if id not )
 
         if id not in calc or '4' not in calc[id].state:
             # printlog(calc[id].state, imp = 'Y')
@@ -3029,7 +3090,8 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
                 dire = cl.dir
             except:
                 dire = ''
-            printlog( "res_loop(): Calculation ",id, 'is unfinished; return \{\} []',dire, imp = 'Y')
+            if log_flag:
+                printlog( "res_loop(): Calculation ", id, "is unfinished; return {} []", dire, imp='Y')
             return {}, []
         
         outloop_segreg_analysis(b_id, analys_type, conv, n, description_for_archive, show, push2archive)
@@ -3042,7 +3104,8 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
         if analys_type == 'redox_pot':
             
             if '4' not in bcl.state:
-                printlog("res_loop: Calculation ",bcl.id, 'is unfinished; return', imp = 'Y')
+                if log_flag:
+                    printlog("res_loop: Calculation ",bcl.id, 'is unfinished; return', imp = 'Y')
                 return {}, []
 
             results_dic = calc_redox(cl, bcl, energy_ref)
@@ -3063,6 +3126,9 @@ def res_loop(it, setlist, verlist,  calc = None, varset = None, analys_type = 'n
             # atat_analysis(cl) / placeholder
 
 
+
+    if header.AUTO_UPDATE_DB:
+        write_database()
 
 
     if results_dic:
@@ -3421,6 +3487,10 @@ def get_structure_from_matproj(it = None, it_folder = None, ver = None, mat_proj
 
 
     """
+    from pymatgen.ext.matproj import MPRester
+    from pymatgen.io.vasp.inputs import Poscar
+    from pymatgen.core.composition import Composition
+
     with MPRester(header.pmgkey) as m:
         # print m.get_materials_id_references('mp-24850')
         # print m.get_structures('mp-24850')
@@ -3456,8 +3526,14 @@ def get_structure_from_matproj(it = None, it_folder = None, ver = None, mat_proj
             sf = SpacegroupAnalyzer(st_pmg, symprec = 0.01)
             st_pmg = sf.get_conventional_standard_structure()
 
-        # print(st_pmg.lattice)
+        cm = Composition(st_pmg.formula)
+
+        # print(cm.reduced_formula)
+        if it is None:
+            it = str(cm.reduced_formula)
         # sys.exit()
+        if it_folder is None:
+            it_folder = it
 
     if it:
         add_des(header.struct_des, it, it_folder, des = 'taken automatically from materialsproject.org: '+groundstate_st_id,)
@@ -3476,7 +3552,8 @@ def get_structure_from_matproj(it = None, it_folder = None, ver = None, mat_proj
     st.groundstate_st_id = groundstate_st_id
     st.mat_proj_st_id    = groundstate_st_id
     st.input_geo_file    = path2poscar
-
+    st.it = it
+    st.it_folder = it_folder
 
     return st
 
@@ -3503,9 +3580,86 @@ def get_structure_from_matproj(it = None, it_folder = None, ver = None, mat_proj
     # print(struct)
 
 
+def get_structure_from_matproj_new(mat_proj_id=None, it=None, it_folder=None, mat_proj_cell=None, ver=None, mute_progress_bars=True):
+    from mp_api.client import MPRester  # Modern MP API client
+    from pymatgen.io.vasp import Poscar
+    from pymatgen.core.composition import Composition
+    """ Version with MP-API instead of outdated Pymatgen-API """ 
+
+    """
+        Find material with 'it' stoichiometry (lowest energy) from materialsproject.org, 
+        download and create field in struct_des and input POSCAR file
+        INPUT:
+            - it        - materials name, such as 'LiCoO2', .... By default the structure with minimum *e_above_hull* is taken
+            - it_folder - section folder in which the Poscar will be placed
+            - ver       - version of structure defined by user
+            - mat_proj_id (str) - the id can be provided explicitly
+            - mat_proj_cell (str)- 
+                    - 'conv' - conventional
+            - mute_progress_bars - mute progress bar of MPRester
+
+        RETURN:
+            - st - siman structure 
+    """
+
+    with MPRester(header.mpkey, mute_progress_bars=mute_progress_bars) as m:
+        if mat_proj_id:
+            groundstate_st_id = mat_proj_id
+        else:
+            # Fetch entries for the given chemical system or formula
+
+            if it:
+                results = m.summary.search(formula=it, fields=["material_id", "energy_above_hull"])
+            else:
+                raise ValueError("No material ID or chemical system provided.")
+
+            # Sort by energy above hull to find the ground state
+            if results:
+                sorted_results = sorted(results, key=lambda x: x.energy_above_hull)
+                groundstate_st_id = sorted_results[0].material_id
+            else:
+                raise ValueError("No results found for the given query.")
+
+            if it is None:
+                it = str(cm.reduced_formula)
+            if it_folder is None:
+                it_folder = it
+
+        # Fetch the structure using the material ID
+        st_pmg = m.get_structure_by_material_id(groundstate_st_id)
+
+        # Convert to conventional cell if requested
+        if mat_proj_cell is not None and 'conv' in mat_proj_cell:
+            sf = SpacegroupAnalyzer(st_pmg, symprec=0.01)
+            st_pmg = sf.get_conventional_standard_structure()
+
+        # Determine the formula and folder name
+        cm = Composition(st_pmg.formula)
+        if it is None:
+            it = str(cm.reduced_formula)
+        if it_folder is None:
+            it_folder = it
 
 
+        os.makedirs("poscar", exist_ok=True)
+        path2poscar = "poscar/" + it + "_" + f"{groundstate_st_id}.POSCAR-" + str(ver)
 
+        if it:
+            add_des(header.struct_des, it, it_folder, des = 'taken automatically from materialsproject.org: '+groundstate_st_id,)
+
+        # Write the structure to a POSCAR file
+        Poscar(st_pmg).write_file(path2poscar, direct=True, vasp4_compatible=True)
+        printlog('Structure', groundstate_st_id, 'downloaded from materialsproject.org\n', 'File '+path2poscar+" was written", imp = 'y')
+
+        # Return the structure with additional metadata
+        st = smart_structure_read(input_geo_file=path2poscar)
+        st.groundstate_st_id = groundstate_st_id
+        st.mat_proj_st_id = groundstate_st_id
+        st.input_geo_file = path2poscar
+        st.it = it
+        st.it_folder = it_folder
+
+        return st
 
 
 

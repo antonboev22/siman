@@ -264,9 +264,10 @@ def calc_kspacings(ngkpt, rprimd):
     for i in 0, 1, 2:
         if ngkpt[i] != 0:
             a = np.linalg.norm( recip[i] ) / ngkpt[i]
-            kspacing.append(red_prec(a))
+            # kspacing.append(red_prec(a))
+            kspacing.append(a)
         else:
-            printlog('Warning! ngkpt = 0 in geo.calc_kspacings', imp='y')
+            printlog('Warning! ngkpt = 0 in siman.geo.calc_kspacings()', imp='y')
 
     return  kspacing
 
@@ -983,10 +984,10 @@ def ortho_vec(rprim, ortho_sizes = None, silent = 0):
     return mul_matrix
 
 
-def find_mul_mat(rprimd1, rprimd2, silent = 0):
+def find_mul_mat(rprimd1, rprimd2, silent = 0, mul = 1):
     #find mul_matrix to convert from rprimd1 to rprimd2
 
-    mul_matrix_float = np.dot( rprimd2,  np.linalg.inv(rprimd1) )
+    mul_matrix_float = np.dot( rprimd2,  np.linalg.inv(rprimd1) ) * mul
     if not silent:
         printlog('mul_matrix_float:\n',mul_matrix_float, imp = 'y', end = '\n')
 
@@ -1009,7 +1010,7 @@ def find_mul_mat(rprimd1, rprimd2, silent = 0):
 
 
 
-def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01, mul = (1,1,1), silent = 0): 
+def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01, mul = (1,1,1), silent = 0, test_natom = 1): 
 
     """ 
     st (Structure) -  
@@ -1019,6 +1020,7 @@ def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01,
 
     bound (float) - shift (A) allows to correctly account atoms on boundaries
     mp    (int)  include additionall atoms before cutting supecell
+    test_natom (bool) - test if the number of atoms is correct after transformation
     test_overlap (bool) - check if atoms are overlapping -  quite slow
     """ 
     sc = st.new() 
@@ -1066,6 +1068,8 @@ def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01,
     sc.typat = []
     sc.xred  = []
     sc.magmom  = []
+    sc.init_numbers = []
+    
     #find range of multiplication
     mi = np.min(mul_matrix, axis = 0)
     ma = np.max(mul_matrix, axis = 0)
@@ -1084,6 +1088,13 @@ def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01,
     # print([range(*z) for z in zip(mi-mp, ma+mp)])
     # print(st.rprimd)
     # print(sc.rprimd)
+
+    if hasattr(st, 'init_numbers') and st.init_numbers:
+        numbers = st.init_numbers
+    else:
+        numbers = range(st.natom)
+
+
     for uvw in itertools.product(*[range(*z) for z in zip(mi-mp, ma+mp)]): #loop over all ness uvw
         # print(uvw)
         xcart_mul = st.xcart + np.dot(uvw, st.rprimd) # coordinates of basis for each uvw
@@ -1091,7 +1102,7 @@ def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01,
         xred_mul  = xcart2xred(xcart_mul, sc.rprimd)
 
         # print(len(xred_mul), len(xcart_mul), len(st.typat), len(st.magmom) )
-        for xr, xc,  t, m in zip(xred_mul, xcart_mul, st.typat, st.magmom):
+        for xr, xc,  t, m, n in zip(xred_mul, xcart_mul, st.typat, st.magmom, numbers):
             # if 0<xr[0]<1 and 0<xr[1]<1 and 0<xr[2]<1:
                 # print (xr)
             if all([0-b <= r < 1-b for r, b in zip(xr, bounds)]): #only that in sc.rprimd box are needed
@@ -1099,12 +1110,15 @@ def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01,
                 sc.xred.append ( xr )
                 sc.typat.append( t  )
                 sc.magmom.append(m)
+                sc.init_numbers.append(n)
     
 
     sc.natom = len(sc.xcart)
 
+    if sc_natom < 0:
+        printlog('Warning! sc_natom is negative, check you input structure. Use supercell on your on risk!')
 
-    if abs(sc.natom - sc_natom)>1e-5: #test 1, number of atoms
+    if test_natom and abs(sc.natom - abs(sc_natom) )>1e-5: #test 1, number of atoms
         printlog('Error! Supercell contains wrong number of atoms:', sc.natom  , 'instead of', sc_natom, 
             'try to increase *mp* of change *bound* ')
 
@@ -1131,19 +1145,19 @@ def create_supercell(st, mul_matrix, test_overlap = False, mp = 4, bound = 0.01,
     return sc
 
 
-def supercell(st, ortho_sizes):
+def supercell(st, ortho_sizes, **argv):
     """
     wrapper
     """
     mul_matrix = ortho_vec(st.rprimd, ortho_sizes)
-    return create_supercell(st, mul_matrix)
+    return create_supercell(st, mul_matrix, **argv)
 
-def cubic_supercell(st, ortho_sizes):
+def cubic_supercell(st, ortho_sizes, **argv):
     """
     wrapper
     """
     mul_matrix = ortho_vec(st.rprimd, ortho_sizes)
-    return create_supercell(st, mul_matrix)
+    return create_supercell(st, mul_matrix, **argv)
 
 
 def determine_symmetry_positions(st, element, silent = 0, symprec = 0.01, angle_tolerance = 5.0):
@@ -1153,7 +1167,7 @@ def determine_symmetry_positions(st, element, silent = 0, symprec = 0.01, angle_
     INPUT:
 
         - st (Structure)
-        - element (str) - name of element, for example Li
+        - element (str) - name of the element, for example Li
         - silent (bool) 
         - symprec (float) - tolerance for symmetry finding
         - angle_tolerance - Angle tolerance for symmetry finding
@@ -1580,11 +1594,11 @@ def create_antisite_defect3(st, el1, el2, i_el2_list = None,
     INPUT:
         el1 - first element name from periodic table for exchange
         el2 - second element name from periodic table for exchange
+        iatom (int) - create antistes using this atom number, from 0
         i_el2_list - use only this specific atom numbers searching AS (duplicates iatom)
 
         tol - tolerance for determining unique antisite configurations (A)
         max_sep - maximum separation between antisite components (A)
-        iatom (int) - create antistes using this atom number, from 0
         return_with_table (bool) - in addition to structures return table with basic information
 
         disp_AS1 - polaronic displacement around first component (-0.2 for hole, +0.2 for electron)
@@ -2230,7 +2244,7 @@ def replace_x_based_on_symmetry(st, el1, el2, x = None, sg = None, info_mode = 0
         - 'rep' - replace atoms 
         - 'pol' - create polarons
 
-    sg - number of required space group obtained with info_mode = 1
+    sg (int) - number of required space group obtained with info_mode = 1
     return list of structures with sg space groups
 
 
@@ -2301,6 +2315,7 @@ def replace_x_based_on_symmetry(st, el1, el2, x = None, sg = None, info_mode = 0
 
         nm = st_rep.sg(silent = silent)[1]
         symmetries.append(nm)
+        # print(nm)
         if nm == sg:
             structures.append(st_rep)
             at_replace.append(atoms_to_replace)
@@ -2310,6 +2325,7 @@ def replace_x_based_on_symmetry(st, el1, el2, x = None, sg = None, info_mode = 0
     if info_mode:
         return list(set(symmetries))
 
+    print('inside function',len(structures))
     return structures, at_replace
 
 
@@ -2755,22 +2771,6 @@ def find_voids(st1, st2):
     st = st1.replace_atoms(removed_at, 'void')
     return st
 
-def hex2rhombo(h,k,l):
-    #https://chem.libretexts.org/Bookshelves/Inorganic_Chemistry/Supplemental_Modules_(Inorganic_Chemistry)/Crystallography/Fundamental_Crystallography/Miller_Indices#Rhombohedral_crystals
-    i = -h - k
-    hr = int(1/3*(-k + i + l))
-    kr = int(1/3*( h - i + l))
-    lr = int(1/3*(-h + k + l))
-    print(hr,kr,lr)
-    return hr,kr,lr
-
-def rhombo2hex(h,k,l):
-    #https://chem.libretexts.org/Bookshelves/Inorganic_Chemistry/Supplemental_Modules_(Inorganic_Chemistry)/Crystallography/Fundamental_Crystallography/Miller_Indices#Rhombohedral_crystals
-    hh = k - l 
-    kh = l - h 
-    lh = h + k + l 
-    print(hh,kh,lh)
-    return hh,kh,lh
 
 
 
@@ -2898,12 +2898,14 @@ def create_ads_molecule(st, molecule = ['O'], mol_xc = [[0,0,0]], conf_i = [0], 
 
 
 def best_miller(hkl):
-    #find best representation of hkl
+    #find best integer representation of float hkl
     #returns float
+
     if min(hkl) == 0: 
         n = abs(max(hkl))
     else:
         n = abs(min(hkl)) 
+    hkl = np.array(hkl)
     hkl = hkl/n
 
     d_m = 100
@@ -2923,7 +2925,16 @@ def best_miller(hkl):
 
 
 def hkl2uvw(hkl, rprimd):
-    #convert hkl to uvw
+    """Find uvw normal to hkl for any lattice
+    INPUT:
+        - hkl (list) - list with plane
+        - rprimd (3*list of 3*arrays) - primitive vectors of lattice
+
+    RETURN
+        - uvw (list) - indicies of direction normal to plane
+
+
+    """
     # print(rprimd)
     # print('rprimd', rprimd)
 
@@ -2936,8 +2947,11 @@ def hkl2uvw(hkl, rprimd):
     uvw = np.dot(grprimd, ghkl )
     # print('uvw', uvw)
     m = np.linalg.norm(uvw)
+    # print(uvw)
+    
     uvw = uvw/m # normalize
     # uvw = uvw.round(0).astype(int)
+    # print(uvw)
     uvwo = best_miller(uvw)
 
 
@@ -3104,6 +3118,58 @@ def test_transform_miller(rprimd1, rprimd2, hkl, silent = 1):
 
 
     return hkl2i_opt
+
+
+
+def hex2rhombo(h,k,l):
+    #https://chem.libretexts.org/Bookshelves/Inorganic_Chemistry/Supplemental_Modules_(Inorganic_Chemistry)/Crystallography/Fundamental_Crystallography/Miller_Indices#Rhombohedral_crystals
+    i = -h - k
+    hr = int(1/3*(-k + i + l))
+    kr = int(1/3*( h - i + l))
+    lr = int(1/3*(-h + k + l))
+    print(hr,kr,lr)
+    return hr,kr,lr
+
+def rhombo2hex(h,k,l):
+    #https://chem.libretexts.org/Bookshelves/Inorganic_Chemistry/Supplemental_Modules_(Inorganic_Chemistry)/Crystallography/Fundamental_Crystallography/Miller_Indices#Rhombohedral_crystals
+    hh = k - l 
+    kh = l - h 
+    lh = h + k + l 
+    print(hh,kh,lh)
+    return hh,kh,lh
+
+
+def three2four_index(uvw):
+    """
+Hexagonal Miller direction indices to Miller-Bravais indices: [uvw]->[UVTW]
+    """
+    # print(uvw, uvw[0])
+    # sys.exit()
+    u = 1/3*(2*uvw[0] - uvw[1])
+    v = 1/3*(2*uvw[1] - uvw[0])
+    t = - (u + v)
+    w = uvw[2]
+    # uvtw = [u,v,t,w]
+
+    # print ('before',[u,v,t,w])
+    uvwo = best_miller([u,v,w])
+    uvtw = list(uvwo)
+    uvtw.insert(2, - (uvwo[0] + uvwo[1]) )
+    # print(uvtw)
+    uvtw = [round(x) for x in uvtw] 
+    return uvtw
+
+def four2three_index(uvtw):
+    """
+    Miller-Bravais indices to Hexagonal Miller direction indices: [UVTW]->[uvw]
+    """
+
+    u = 2*uvtw[0] + uvtw[1]
+    v = 2*uvtw[1] + uvtw[0]
+    w = uvtw[3]
+    uvw = [u,v,w]
+
+    return uvw
 
 
 
@@ -3598,7 +3664,7 @@ def remove_vacuum(self, thickness = 0.0):
     return st_new
 
 
-def make_neutral(self, oxidation = None, type = 'element', at_fixed = None, mode = 'equal', 
+def make_neutral(self, oxi_state = None, type = 'element', at_fixed = None, mode = 'equal', 
                 return_oxidation = 1, silent = 1):
     """
     Makes slab with total a charge equal to 0 
@@ -3609,8 +3675,6 @@ def make_neutral(self, oxidation = None, type = 'element', at_fixed = None, mode
             E.g oxi_state = {"Li": 1, "La": 2, "Zr":4, "O": -2}
         type (dir integer) - assign oxidation states based on algorythm
             'element' - by chemical element, requires oxidation in format: 
-                E.g oxi_state = {"Li": 1, "La": 2, "Zr":4, "O": -2}
-            'position' - by position of chemical element, requires oxidation in format:
                 E.g oxi_state = {"Li": 1, "La": 2, "Zr":4, "O": -2}
         at_fixed (dir string) - list of atoms with fixed oxidation states
         mode (string) - how uncompensated charge will be redistributed between unfixed atoms    
@@ -3623,6 +3687,7 @@ def make_neutral(self, oxidation = None, type = 'element', at_fixed = None, mode
         else
             returns only a new structure 
 
+    add: change oxi_states only on transition metals
     author - A. Burov 
 
     """
@@ -3630,7 +3695,7 @@ def make_neutral(self, oxidation = None, type = 'element', at_fixed = None, mode
     st = copy.deepcopy(self)
     st = st.convert2pymatgen()
 
-    st.add_oxidation_state_by_element(oxidation)    
+    st.add_oxidation_state_by_element(oxi_state)    
     diff_chr = st.charge
 
     if (silent  == 1):
@@ -3649,58 +3714,58 @@ def make_neutral(self, oxidation = None, type = 'element', at_fixed = None, mode
         for key, item in at_init.items():
             if (diff_chr > 0):
                 if (key not in at_fixed):
-                    if (oxidation[key] > 0):
+                    if (oxi_state[key] > 0):
                         at_sum += item
             else:
                 if (key not in at_fixed):
-                    if (oxidation[key] < 0):
+                    if (oxi_state[key] < 0):
                         at_sum += item
             
         rel_chr = diff_chr / at_sum
-        for key, item in oxidation.items():
+        for key, item in oxi_state.items():
             if (diff_chr > 0):
                 if (key not in at_fixed):
-                    if (oxidation[key] > 0):
-                        oxidation[key] = item - rel_chr
+                    if (oxi_state[key] > 0):
+                        oxi_state[key] = item - rel_chr
             else:
                 if (key not in at_fixed):
-                    if (oxidation[key] < 0):
-                        oxidation[key] = item - rel_chr
+                    if (oxi_state[key] < 0):
+                        oxi_state[key] = item - rel_chr
 
     elif (mode == 'propotional'):
         ox_sum = 0
         for key, item in at_init.items():
             if (diff_chr > 0):
                 if (key not in at_fixed):
-                    if (oxidation[key] > 0):
-                        ox_sum += oxidation[key]
+                    if (oxi_state[key] > 0):
+                        ox_sum += oxi_state[key]
             else:
                 if (key not in at_fixed):
-                    if (oxidation[key] < 0):
-                        ox_sum += oxidation[key]
+                    if (oxi_state[key] < 0):
+                        ox_sum += oxi_state[key]
 
-        for key, item in oxidation.items():
+        for key, item in oxi_state.items():
             rel_chr = item / ox_sum * diff_chr / at_init[key]
             if (diff_chr > 0):
                 if (key not in at_fixed):
-                    if (oxidation[key] > 0):
-                        oxidation[key] = item - rel_chr
+                    if (oxi_state[key] > 0):
+                        oxi_state[key] = item - rel_chr
             else:
                 if (key not in at_fixed):
-                    if (oxidation[key] < 0):
-                        oxidation[key] = item - rel_chr 
+                    if (oxi_state[key] < 0):
+                        oxi_state[key] = item - rel_chr 
 
-        st.add_oxidation_state_by_element(oxidation)    
+        st.add_oxidation_state_by_element(oxi_state)    
         print(st.charge)
 
     else:
         print("Wrong mode, check the function's description")
 
     if (silent == 1):
-        print("New oxidation states are {}".format(oxidation))
+        print("New oxidation states are {}".format(oxi_state))
 
     if (return_oxidation == 1):
-        return st, oxidation
+        return st, oxi_state
     else:
         return st
 
@@ -3763,6 +3828,32 @@ def find_slab_width(self, vacuum="no"):
         width = c_new
         
     return round(width, 1)
+
+
+def ewald_energy(self, oxi_state="no", silent=0):
+    """
+        Calculate width of the sample without vacuum.
+        INPUT:
+            st - input strucutre
+            oxi_state - oxidation states of elements
+                E.g.  {"Li": 1, "La": 2, "Zr":4, "O": -2}
+        RETURN:
+            Structure's Ewald Energy 
+    """
+    from pymatgen.analysis.ewald import EwaldSummation
+
+    st = copy.deepcopy(self)
+    st = st.convert2pymatgen()
+    st.add_oxidation_state_by_element(oxi_state)
+
+    ew_en = EwaldSummation(st, real_space_cut=None, recip_space_cut=None, eta=None, acc_factor=12.0, 
+                                                                w=0.7071067811865475, compute_forces=False)
+    if not silent:
+        print('Total Ewald energy is {:1.2f} eV'.format(ew_en.total_energy))
+
+    return ew_en.total_energy
+
+
 
 
 

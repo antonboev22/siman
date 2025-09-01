@@ -91,7 +91,8 @@ def smoother(x, n, mul = 1, align = 1):
 
 
 def run_on_server(command, addr = None):
-    printlog('Running', command, 'on server ...')
+    
+    printlog('run_on_server(): Running', command, 'on server ...')
     command = command.replace('\\', '/') # make sure is POSIX
     # sys.exit()
     
@@ -160,7 +161,8 @@ def push_to_server(files = None, to = None,  addr = None):
     
     command = ' mkdir -p {:}'.format( to )
     # print('asfsadfdsf', to)
-    printlog('push_to_server():', command, run_on_server(command, addr))
+    run_on_server(command, addr)
+    # printlog('push_to_server():', command, )
     # sys.exit()
 
     printlog('push_to_server(): uploading files ', files, 'to', addr, to)
@@ -424,6 +426,22 @@ def salary_inflation():
     return
 
 def element_name_inv(el):
+    """
+    Return Z of element if element name is provided and vise vera 
+    e.g.
+    element_name_inv('C')
+    6
+    element_name_inv(6)
+    'C'
+
+    INPUT:
+        el (str or int) - Z or name of element
+
+    RETURN
+        Z or element name depending on input
+
+
+    """
     el_dict = header.el_dict
     nu_dict = header.nu_dict
     # print type(el), el, type(str('sdf') )
@@ -702,17 +720,35 @@ def log_history(hstring):
 
 
 def gb_energy_volume(gb,bulk):
+
+    """
+    Calculate formation energy and excess voluem of a grain boundary (GB) using two calculation objects (with GB and ideal bulk one).
+
+    INPUT:
+
+    - gb - Calculation object with GB structure 
+    - bulk - Calculation object with defectless structure
+
+    RETURN:
+    - gb.e_gb - formation energy of the GB in J/m^2
+    - gb.v_gb - excess voluem of the GB in Angstroms
+
+    AUTHOR:
+    Dmitry Aksenov (updated by Nikita Davydov)
+
+    """
+
     if (gb.end.rprimd[1] != bulk.end.rprimd[1]).any() or (gb.end.rprimd[2] != bulk.end.rprimd[2]).any():
         print_and_log("Warning! You are trying to calculate gb_energy from cells with different lateral sizes:"+str(gb.end.rprimd)+" "+str(bulk.end.rprimd)+"\n")
     #print bulk.vol
-    V_1at = bulk.vol / bulk.natom #* to_ang**3
+    V_1at = bulk.end.vol / bulk.end.natom #* to_ang**3
 
-    E_1at = bulk.energy_sigma0 / bulk.natom 
-    A = np.linalg.norm( np.cross(gb.end.rprimd[1], gb.end.rprimd[2])  ) #surface area of gb
+    E_1at = bulk.energy_sigma0 / bulk.end.natom 
+    A = min( np.linalg.norm(np.cross(gb.end.rprimd[0], gb.end.rprimd[1])), np.linalg.norm(np.cross(gb.end.rprimd[0], gb.end.rprimd[2])), np.linalg.norm(np.cross(gb.end.rprimd[1], gb.end.rprimd[2])) ) #surface area of gb
     #print A
-    gb.v_gb =      ( gb.vol              - V_1at * gb.natom) / A / 2. * 1000
-    gb.e_gb =      ( gb.energy_sigma0    - E_1at * gb.natom) / A / 2. * eV_A_to_J_m * 1000
-    gb.e_gb_init = ( gb.list_e_sigma0[0] - E_1at * gb.natom) / A / 2. * eV_A_to_J_m * 1000
+    gb.v_gb =      ( gb.end.vol              - V_1at * gb.end.natom) / A / 2. 
+    gb.e_gb =      ( gb.energy_sigma0    - E_1at * gb.end.natom) / A / 2. * eV_A_to_J_m 
+    gb.e_gb_init = ( gb.list_e_sigma0[0] - E_1at * gb.end.natom) / A / 2. * eV_A_to_J_m 
     gb.bulk_extpress = bulk.extpress     
     #print "Calc %s; e_gb_init = %.3f J/m^2; e_gb = %.3f J/m; v_gb = %.3f angstrom "%(gb.name, gb.e_gb_init, gb.e_gb, gb.v_gb )
     outst = "%15s&%7.0f&%7.0f"%(gb.name, gb.e_gb, gb.v_gb)

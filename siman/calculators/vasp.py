@@ -32,6 +32,7 @@ class CalculationVasp(Calculation):
         self.len_units = 'Angstrom'
         self.init = Structure()
         self.end = Structure()
+        self.cluster = {'address':''}
 
 
 
@@ -101,7 +102,7 @@ class CalculationVasp(Calculation):
 
     def write_structure(self, name_of_output_file, type_of_coordinates = 'dir', option = None, prevcalcver = None, path = None, state = 'init'):
         """Generates POSCAR file
-           type_of_coordinates - 'direct' (xred) or 'cartesian' (xcart)
+           type_of_coordinates - 'direct'/'dir' (xred) or 'cartesian'/'car' (xcart)
            option -inheritance option
            prevcalcver - ver of first calc in calc list; for first None
            state - 'init' or 'end' 
@@ -212,7 +213,7 @@ class CalculationVasp(Calculation):
                 curset.add_nbands = None
 
 
-            tve =0 # total number of valence electrons
+            tve = 0 # total number of valence electrons
             for i in range(st.ntypat):
                 # print self.init.zval
                 tve += self.init.zval[i] * st.nznucl[i] #number of electrons 
@@ -221,24 +222,41 @@ class CalculationVasp(Calculation):
                 vp['NELECT'] = int(tve - params['charge'])
 
 
-            if curset.add_nbands != None:
+            if vp.get('mul_nbands_small_cell') is not None and st.natom < 9:
+                mul_nbands = vp.get('mul_nbands_small_cell')
+                printlog('I use mul_nbands_small_cell, since the cell has less than 9 atoms')
+            elif curset.add_nbands is not None:
+                mul_nbands = curset.add_nbands
+            else:
+                mul_nbands = None
+
+            if mul_nbands is not None:
 
                 nbands_min = math.ceil(tve / 2.)
-                self.nbands = int ( round ( nbands_min * curset.add_nbands ) )
-                # print(self.nbands)
-                
-
+                self.nbands = int ( round ( nbands_min * mul_nbands ) )
                 vp['NBANDS'] = self.nbands
-                printlog('I found that at least', nbands_min, ' bands are required. I will use', self.nbands, 'bands; add_nbands = ', curset.add_nbands)
+                
+                printlog('I found that at least', nbands_min, ' bands are required. I will use', self.nbands, 'bands; mul_nbands = ', mul_nbands)
+            else:
+                if 'NBANDS' not in vp:
+                    printlog('Warning! No NBANDS in your set. The VASP will use ')
 
 
 
 
+            if ('LSORBIT' in vp and vp['LSORBIT']) or ('LNONCOLLINEAR' in vp and vp['LNONCOLLINEAR']):
 
-            if 'LSORBIT' in vp and vp['LSORBIT']:
-                # print (vp)
-                printlog('SOC calculation detected; increasing number of bands by two', imp = 'Y')
-                vp['NBANDS']*=2
+                vp['NBANDS'] *= 2
+
+                if vp['LSORBIT']:
+                    printlog('SOC calculation detected; I double number of bands up to', vp['NBANDS'],  imp = 'Y')
+                    printlog('Warning! When SOC is included, we recommend testing whether switching off symmetry (ISYM=-1) changes the results.', imp = 'Y')
+                    printlog('k-point convergence is tedious and slow, be carefull', imp = 'Y')
+                elif vp['LNONCOLLINEAR']: 
+                    printlog('LNONCOLLINEAR calculation detected; I double number of bands up to', vp['NBANDS'], imp = 'Y')
+
+                if 'LREAL' in vp and 'False' not in vp['LREAL']:
+                    printlog('Warning! LREAL = .False. is suggested for SOC!', imp = 'Y')
 
 
 
@@ -257,7 +275,7 @@ class CalculationVasp(Calculation):
 
 
 
-    def make_incar(self):
+    def make_incar(self, filename = None):
         """Makes Incar file for current calculation and copy all
         TO DO: there is no need to send all POSCAR files; It is enough to send only one. However for rsync its not that crucial
         """
@@ -285,8 +303,11 @@ class CalculationVasp(Calculation):
                 name_mod = ''
             else:
                 name_mod = curset.ise+'.'
+            if filename:
+                incar_filename = filename
+            else:
+                incar_filename = d+name_mod+'INCAR'
 
-            incar_filename = d+name_mod+'INCAR'
             vp = curset.vasp_params
             
 
@@ -299,7 +320,9 @@ class CalculationVasp(Calculation):
 
 
                 for key in sorted(vp):
-    
+                    if key in set_functions.siman_keys:
+                        continue
+
                     if key == 'SYSTEM':
                         ''
                     elif key == 'MAGMOM' and hasattr(self.init, 'magmom') and self.init.magmom and any(self.init.magmom): #
@@ -314,6 +337,7 @@ class CalculationVasp(Calculation):
                             f.write('MAGMOM = ' + list2string(magmom_aligned_with_poscar) + '\n')
                         # magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order ]
                         # f.write('MAGMOM = '+list2string(magmom_aligned_with_poscar)+"\n") #magmom from geo file has higher preference
+
                    
                     elif vp[key] == None:
                         ''
@@ -403,17 +427,16 @@ class CalculationVasp(Calculation):
 
 
     
-    def make_kpoints_file(self):
+    def make_kpoints_file(self, filename = None):
 
         struct_des = header.struct_des
         #Generate KPOINTS
         kspacing = self.set.vasp_params.get('KSPACING')
 
-        filename = os.path.join(self.dir, "KPOINTS")
+        if filename is None:
+            filename = os.path.join(self.dir, "KPOINTS")
 
         it = self.id[0]
-
-
 
         if hasattr(self.set, 'k_band_structure') and self.set.k_band_structure:
             k = self.set.k_band_structure
@@ -427,14 +450,23 @@ class CalculationVasp(Calculation):
                 ps= k[1]
                 for pn in k[2:]:
                     # pn  = next(k)
-                    f.write('{:6.3f} {:6.3f} {:6.3f} ! {:s}\n'.format(ps[1], ps[2], ps[3], ps[0]) ) 
-                    f.write('{:6.3f} {:6.3f} {:6.3f} ! {:s}\n\n'.format(pn[1], pn[2], pn[3], pn[0]) ) 
+                    f.write('{:6.6f} {:6.6f} {:6.6f} ! {:s}\n'.format(ps[1], ps[2], ps[3], ps[0]) )
+                    f.write('{:6.6f} {:6.6f} {:6.6f} ! {:s}\n\n'.format(pn[1], pn[2], pn[3], pn[0]) ) 
                     ps = pn
-
-
-
-
-
+        
+        
+        elif hasattr(self.set, 'k_effective_mass') and self.set.k_effective_mass:
+            k = self.set.k_effective_mass
+            printlog('Writing k-points file for effective mass calculation.', imp = 'y')
+            
+            with open(filename, 'w', newline = '') as f:
+                f.write('Explicit k-point list\n')
+                f.write('{:} ! full number of points\n'.format(k[0]))
+                f.write('frac\n')
+                for pn in k[1:]:
+                    f.write('{:6.6f} {:6.6f} {:6.6f}   {:1.0f}\n'.format(pn[1], pn[2], pn[3], pn[0]) )
+        
+        
         elif self.set.kpoints_file:
             if self.set.kpoints_file is True:
 
@@ -443,7 +475,7 @@ class CalculationVasp(Calculation):
                 #Generate kpoints file
 
                 #
-                if hasattr(struct_des[it], 'ngkpt_dict_for_kspacings') and kspacing in struct_des[it].ngkpt_dict_for_kspacings:
+                if it in struct_des and hasattr(struct_des[it], 'ngkpt_dict_for_kspacings') and kspacing in struct_des[it].ngkpt_dict_for_kspacings:
                     N =    struct_des[it].ngkpt_dict_for_kspacings[kspacing]
                     printlog( 'Attention! ngkpt = ',N, 
                         ' is adopted from struct_des which you provided for it ',it, ' and kspacing = ',kspacing)
@@ -475,7 +507,11 @@ class CalculationVasp(Calculation):
                     else: 
                         f.write("Monkhorst Pack\n")
                     f.write('%i %i %i \n'%(nk1, nk2, nk3) )
-                    f.write("0 0 0\n") # optional shift
+                    if hasattr(self.set, 'shiftk') and self.set.shiftk:
+                        s = self.set.shiftk
+                        f.write("{:.6f} {:.6f} {:.6f}\n".format(s[0],s[1], s[2])) # optional shift
+                    else:
+                        f.write("0 0 0\n") # optional shift
 
                 printlog( "KPOINTS was generated\n")
             
@@ -668,6 +704,10 @@ class CalculationVasp(Calculation):
         # print(self.init.magmom)
         # print(None in self.init.magmom)
         # sys.exit()
+        magmom = []
+        
+        if hasattr(self.init, 'magmom') and hasattr(self.init.magmom, '__iter__') and not None in self.init.magmom and bool(self.init.magmom):
+            magmom = self.init.magmom
 
         # if params['update_set_dic']['MAGMOM']:
         #     printlog('actualize_set(): Magnetic moments are determined from params:',params['update_set_dic']['MAGMOM'], imp = 'y')
@@ -681,7 +721,6 @@ class CalculationVasp(Calculation):
             printlog('curset.magnetic_moments = ', curset.magnetic_moments)
             
             mag_mom_other = 0.6 # magnetic moment for all other elements
-            magmom = []
             for el in curset.magnetic_moments.keys():
                 if '/' in el and ldau == False:
                     # if ldau is true and multitype regime is true then everything is updated above
@@ -813,28 +852,55 @@ class CalculationVasp(Calculation):
                     if self.calc_method and 'afm_ordering' in self.calc_method:
                         self.magnetic_orderings = mag_orderings
                   
+
+
+
+        
             self.init.magmom = magmom # the order is the same as for other lists in init
 
-        
         elif 'MAGMOM' in vp and vp['MAGMOM']: #just add * to magmom tag if it is provided without it
             printlog('Magnetic moments from vasp_params["MAGMOM"] are used\n')
+
+            magmom = vp['MAGMOM']
+            # if "*" not in vp['MAGMOM']:
+            #     vp['MAGMOM'] = str(natom) +"*"+ vp['MAGMOM']
         
-        # if "*" not in vp['MAGMOM']:
-        #     vp['MAGMOM'] = str(natom) +"*"+ vp['MAGMOM']
-    
+        if ('LSORBIT' in vp and vp['LSORBIT']) or ('LNONCOLLINEAR' in vp and vp['LNONCOLLINEAR']):
+            if len(magmom) == 0:
+                printlog('Warning! magmom is empty')
+            elif len(magmom) == self.init.natom:
+                printlog('magmom is converted to [0,0, m, 0, 0, m ...] required for noncollinear calculations', imp = 'y')
+                magmom = [x for m in magmom for x in (0, 0, m)]
+            else:
+                printlog('magmom is used from previous SO calculation', magmom, imp = 'y')
+            self.init.magmom = magmom
+
+            if 'MAGMOM' in vp and vp['MAGMOM'] and len(vp['MAGMOM']) == self.init.natom:
+                vp['MAGMOM'] = [x for m in vp['MAGMOM'] for x in (0, 0, m)]
+                printlog('MAGMOM from set was converted to [0,0, m, 0, 0, m ...]:', vp['MAGMOM'] , imp = 'y')
+            vc = self.cluster['vasp_com'].split()
+            self.cluster['vasp_com'] = ' '.join(vc[0:-1]) + ' vasp_ncl'
+            printlog('vasp_com replaced to vasp_ncl', imp = 'y')
 
 
-        # print (self.init.magmom, 'asdfaaaaaaaaaaaa')
-        
-        # sys.exit()
-
-        # number of electrons
+        if 'cluster_run_command' in vp and vp['cluster_run_command']:
+            vc = cl.cluster['vasp_com'].split()
+            cl.cluster['vasp_com'] = vc[0] + ' ' + vp['cluster_run_command']
 
         if vp.get('MAGATOM') is not None: # for ATAT
             # print (vp['MAGATOM'])
             del vp['MAGMOM']
             # self.init.magmom = [None]
             # sys.exit()
+
+        if params.get('ngkpt'):
+            curset.ngkpt = params.get('ngkpt')
+
+
+        if params.get('shiftk'):
+            curset.shiftk = params.get('shiftk')
+
+
 
         if self.calculator == 'aims':
             if None not in self.init.magmom:
@@ -1020,22 +1086,23 @@ class CalculationVasp(Calculation):
         """
         Download and Read VASP OUTCAR file
 
-        ###INPUT:
+        INPUT:
             - load (str) - 'x' - download xml, o - download outcar and contcar, un - read unfinished
             - show (str) - print additional information
                 alkali_ion_number - show mag around this ion
             - choose_outcar - see description in res_loop(), from 1
-            - out_type - controls the return string
+            - out_type (str) - controls the return string
                 see in code, add here
                 also controls reading of OUTCAR
                 'xcarts' read xcart every relaxation step and write into self.end.list_xcart
 
             - only_load (bool) - if true - only load the files (used for database)
 
-        ###RETURN:
+        RETURN:
             ?
 
-        ###DEPENDS:
+        DEPENDS:
+        
         TODO:
         please split into outcar parser, downloader, and checker-formatter
 
@@ -1141,6 +1208,9 @@ class CalculationVasp(Calculation):
             # get_from_server(files = files, to = os.path.dirname(path_to_outcar),  addr = self.cluster_address)
             for file in files:
                 self.get_file(os.path.basename(file), up = load)
+
+
+
 
 
         if 'x' in load:
@@ -1585,7 +1655,7 @@ class CalculationVasp(Calculation):
         print(self.dir)
         out = runBash(phonopy_command+' --fc '+os.path.basename(self.path['xml']))
 
-        printlog('phonopy out: ', out)
+        print('phonopy out: ', out)
 
 
 

@@ -50,7 +50,7 @@ from siman.functions import (read_vectors, read_list, words, read_string,
     get_from_server, push_to_server, run_on_server, smoother, file_exists_on_server, check_output)
 from siman.geo import (image_distance, replic, calc_recip_vectors, calc_kspacings, xred2xcart, xcart2xred, 
 local_surrounding, local_surrounding2, determine_symmetry_positions, remove_closest, remove_vacuum, make_neutral, 
-rms_between_structures, rms_between_structures2)
+rms_between_structures, rms_between_structures2, find_slab_width, move_edge, ewald_energy)
 from siman.set_functions import InputSet, aims_keys
 from siman.inout import write_xyz, write_lammps, read_xyz, read_poscar, write_geometry_aims, read_aims_out, read_vasp_out
 
@@ -58,7 +58,9 @@ from siman.inout import write_xyz, write_lammps, read_xyz, read_poscar, write_ge
 
 
 class Structure():
-    """This class includes only structure related information such as primitive vectors, coordinates, forces and so on"""
+    """This class includes only structure related information such as primitive vectors, coordinates, atom types, magnetic moments, etc.
+
+    """
     def __init__(self):
         self.name = ""
         self.des = ''
@@ -336,7 +338,7 @@ class Structure():
         return self.get_elements()[i]
 
     def get_elements_z(self):
-        #return list of elements z-numbers
+        #return list of elements z-numbers for all atoms in the cell
         return [self.znucl[t-1] for t in self.typat]
     def get_el_z(self, i):
         #return z-number of element
@@ -393,8 +395,25 @@ class Structure():
 
 
 
-    def get_total_number_electrons(self):
+    def get_total_number_electrons(self, iset):
+        """
+        Calculate total number of electrons for this structure and set ise
+
+        INPUT:
+            - iset (InputSet) - InputSet object from header.varset dict
+
+
+        RETURN:
+            - total number of electrons
+
+        """
+
+        el_list = [invert(z) for z in self.znucl]
+
+        self.zval = iset.get_n_valence_electrons(el_list)
+
         zvals = self.get_elements_zval()
+        # print(zvals)
         return int(sum(zvals))
 
 
@@ -480,14 +499,31 @@ class Structure():
         return groups_size, groups_nums
 
 
-    def get_mag_tran(self, to_ox = None, silent = 0):
-        #show formatted mag moments of transition metals 
-        #to_ox - convert to oxidation state, substract from to_ox
-        # if to_ox is negative, then m-to_ox
-        l, mag_numbers = self.get_maglist([8])
+    def get_mag_tran(self, to_ox = None, silent = 0, fmt = '5.2f', extra_el = None):
+        """
+        Print formatted magnetic moments of transition elements, oxygen, and provided extra elements
+        
+        INPUT:
+            - to_ox - convert to oxidation state, substract from to_ox
+                     if to_ox is negative, then m-to_ox
+            - silent (bool) - if true do not print
+            - fmt (str) - format used for printing
+            - extra_el (list) - list with extra elements to show
+        RETURN:
+            list of magmom of transition elements, oxygen and provided extra elements
+        """
+        if extra_el is None:
+            extra_el = []
+        extra_el.append('O') #always show oxygen
+        zels = [invert(el) for el in extra_el ]
 
-        keys = list(mag_numbers.keys())#[0]
-        print('The following TM are found:', keys)
+
+        l, mag_numbers = self.get_maglist(zels)
+
+        keys = list(mag_numbers.keys())
+
+        if not silent:
+            print('The following TM are found:', keys)
 
         mag = list(np.array(self.magmom)[l])
         magnetic = None
@@ -499,9 +535,9 @@ class Structure():
             mag = mag[len(mag_numbers[key]):]
             # print(magnetic)
 
-            s = ' '.join(['{:5.2f} ']*len(magnetic))
+            s = ' '.join(['{:'+fmt+'} ']*len(magnetic))
             
-            s0 = ' '.join(['{:5d} ']*len(magnetic))
+            # s0 = ' '.join(['{:5d} ']*len(magnetic))
 
             # print(*mag_numbers[key])
             if not silent:
@@ -510,6 +546,7 @@ class Structure():
                 # print(magnetic)
                 print(' '+s.format(*magnetic))
             magnetic_all += magnetic
+            
             if to_ox:
                 if to_ox > 0:
                     ox = [to_ox-abs(m) for m in magnetic]
@@ -1768,7 +1805,6 @@ class Structure():
 
         if len(magmom) == 0:
             magmom = [None]
-
         st.old_numbers = old_numbers
         st.xcart = xcart
         st.magmom = magmom
@@ -1778,6 +1814,8 @@ class Structure():
         st.name+='_r'
         # st.write_poscar()
 
+        # print(st.magmom)
+        # sys.exit()
         return st
 
     def reorder(self, new_order):
@@ -2109,8 +2147,9 @@ class Structure():
         el_new - new element periodic table short name
         mag_new - new magnetic moment
         mode 
-            1 - old behaviour, numbering is not conserved
+            1 - old behaviour, numbering is not conserved, may work incorrectly when list of numbers is random!
             2 - numbering is conserved if el_new already exists in self
+            3 - first remove, then return back
 
         TODO:
         Now if el_new already exists in structure, numbering is conserved,
@@ -2130,7 +2169,7 @@ class Structure():
         else:
             warn = 'Y'
 
-
+        # print('atoms_to_replace', atoms_to_replace)
         if mode in [1,2]:
             while atom_exsist:
 
@@ -2210,17 +2249,24 @@ class Structure():
 
 
         for i, (n, el) in enumerate(  zip(numbers, st.get_elements()) ):
-            if el == el_old: nums.append(n)
-            # print(nums)
+            if el == el_old: 
+                nums.append(n)
+                # print(n, el)
+        # print(nums)
         n_replace = int(len(nums)*concentration)
         c = float(n_replace/len(nums))
-        if c != concentration: print('\n\nAttention! This concentraiton is impossible. Real concentration is - ', c) 
+        if c != concentration: 
+            print('\n\nAttention! This concentraiton is impossible. Real concentration is - ', c) 
+        
         print('\nI have found {} from {} random atoms of {} to replace by {} \n'.format(n_replace, len(nums), el_old, el_new ))
         random.shuffle(nums)
 
         atoms2replace = nums[0:n_replace]
-        # print(num2replace)
-        st = st.replace_atoms(atoms2replace, el_new)
+        # print(atoms2replace)
+        # print(el_new)
+        # st.printme()
+        st = st.replace_atoms(atoms2replace, el_new, silent = 0, mode = 3)
+        # st.printme()
 
         return st
 
@@ -2732,6 +2778,9 @@ class Structure():
     def find_slab_width(self, *args, **kwargs):
         return find_slab_width(self, *args, **kwargs)
 
+    def ewald_energy(self, *args, **kwargs):
+        return ewald_energy(self, *args, **kwargs)
+
     def find_closest_atom(self, xc = None, xr = None):
         """
         Find closest atom in structure to xc (cartesian) or xr (reduced) coordinate
@@ -2833,8 +2882,8 @@ class Structure():
             if header.FROM_ONE is not None: #overwrites default behavior
                 from_one = header.FROM_ONE
 
-        if header.FROM_ONE != from_one:
-            printlog('Warning! provided *from_one* and header.FROM_ONE are different. I am using from header')
+            if header.FROM_ONE != from_one:
+                printlog('Warning! nn() the default *from_one* and header.FROM_ONE are different. I am using from header')
 
 
 
@@ -3010,7 +3059,7 @@ class Structure():
         return dist_list
 
 
-    def find_unique_topologies(self, el1, el2, nn = 6, tol = 0.5, told = 0.005, tolmag = 0.4, write_loc = 0):
+    def find_unique_topologies(self, el1, el2, nn = 6, tol = 0.5, told = 0.005, tolmag = 0.4, write_loc = 0, silent = None):
 
         """
         Looks for unique topologies
@@ -3061,8 +3110,12 @@ class Structure():
             av_dev, _   = local_surrounding2(x, st, nn, 'av_dev', True, only_elements = [z2], round_flag = 0 )
             # if av_dev > 100:
                 #probably surface atom, deviation is too much
-            mag = st.magmom[i]
-            print('Deviation for atom {:d} is {:.1f}'.format(i, av_dev) )
+            mag = 0
+            if i in st.magmom:
+                mag = st.magmom[i]
+            if not silent:
+
+                print('Deviation for atom {:d} is {:.1f}'.format(i, av_dev) )
             if len(unique_centers) == 0:
                 unique_centers.append(i)
                 unique_deviations.append(av_dev)
@@ -3079,13 +3132,15 @@ class Structure():
                 unique_deviations.append(av_dev)
         
         # pretty = pprint.PrettyPrinter(width=30)
-
-        print('Unique centers are ', unique_centers,'. number, deviation6, deviation5, magmom, and topology of polyhedra and  for each:')
+        if not silent:
+            print('Unique centers are ', unique_centers,'. number, deviation6, deviation5, magmom, and topology of polyhedra and  for each:')
+        out = {}
         for i, d in zip(unique_centers, unique_deviations):
             dic = st.nn(i, only = [z2], from_one = 0, silent = 1)
             lengths = dic['dist'][1:]
             av = dic['av(A-O,F)']
-            if d > 100:
+            # if d > 100:
+            if d > 1000:
                 x = st.xcart[i]
                 av_dev5, _   = local_surrounding2(x, st, 5, 'av_dev', True, only_elements = [z2], round_flag = 0 )
                 st.name+=str(i)
@@ -3093,10 +3148,14 @@ class Structure():
                     st.write_xyz(show_around=i+1, analysis = 'imp_surrounding', only_elements = [z2])
             # print(lengths)
             groups = group_bonds(lengths, told)
-            print( '{:2d} | {:4.1f} | {:4.1f} | {:4.1f} :'.format(i, d, av_dev5, st.magmom[i]))
-            print(groups, 'av={:.2f} \n'.format(av))
-
-        return
+            mag = 0
+            if i in st.magmom:
+                mag = st.magmom[i]
+            if not silent:
+                print( '{:2d} | {:4.1f} | {:4.1f} | {:4.1f} :'.format(i, d, av_dev5, mag))
+                print(groups, 'av={:.2f} \n'.format(av))
+            out[i] = av
+        return out
 
     def center(self, reduced = 0):
         #return cartesian or reduced center of the cell
@@ -3410,7 +3469,16 @@ class Structure():
 
     def make_polarons(self, atoms, pol_type = 'hole', mag = None, silent = 1):
         """
+        Experimental!!!. Please improve for pol_type
         create polarons
+
+        INPUT:
+
+            - atoms (list) - list of atom numbers
+            - pol_type (str)
+                - 'hole'
+                - 
+
         """
         st = self.copy()
         for i in atoms:
@@ -3602,11 +3670,15 @@ class Structure():
 
         makedir(filename)
 
-        printlog('Starting writing Quantum Espresso', filename,imp = 'y')
+        printlog('Writing structure in Quantum Espresso format ', filename,imp = 'y')
 
 
         with io.open(filename,'w', newline = '') as f:
-            f.write('ATOMIC_POSITIONS\n')
+            f.write('CELL_PARAMETERS angstrom\n')
+            for i in 0, 1, 2:
+                f.write('{:10.6f} {:10.6f} {:10.6f}'.format(st.rprimd[i][0],st.rprimd[i][1],st.rprimd[i][2]) )
+                f.write("\n")
+            f.write('ATOMIC_POSITIONS crystal\n')
             for el, x in zip(st.get_elements(), st.xred):
                 f.write(" {:2s}   {:12.10f}  {:12.10f}  {:12.10f} \n".format(el, x[0], x[1], x[2]) )
 
@@ -3616,7 +3688,7 @@ class Structure():
         return
 
 
-    def write_poscar(self, filename = None, coord_type = 'dir', vasp5 = True, charges = False, energy = None, selective_dynamics = False, shift = None):
+    def write_poscar(self, filename = None, coord_type = 'dir', vasp5 = True, charges = False, energy = None, selective_dynamics = False, shift = None, aseheader = False):
         """
         write 
 
@@ -3629,6 +3701,8 @@ class Structure():
             None - not written
 
         shift - shift atoms
+
+        aseheader (bool) - change first line to element list. Needed for neb calculation via add_neb function
         
         NOTE
         #void element type is not written to POSCAR
@@ -3746,13 +3820,17 @@ class Structure():
             else:
                 energy_string = ''
 
-            f.write('i2a=['+list2string(elnames).replace(' ', ',') + '] ; '+energy_string)
+            if aseheader == True:
+                for el in elnames:
+                    f.write(el+' ')
+            else:
+                f.write('i2a=['+list2string(elnames).replace(' ', ',') + '] ; '+energy_string)
             
-            if hasattr(self, 'tmap'):
-                f.write('tmap=[{:s}] ; '.format(list2string(st.tmap).replace(' ', ',') ))
+                if hasattr(self, 'tmap'):
+                    f.write('tmap=[{:s}] ; '.format(list2string(st.tmap).replace(' ', ',') ))
 
-            # print(self.name)
-            f.write(self.name)
+                # print(self.name)
+                f.write(self.name)
 
 
             f.write("\n{:18.15f}\n".format(1.0))
@@ -3817,6 +3895,13 @@ class Structure():
 
 
             # print('write_poscar(): predictor:\n', st.predictor)
+
+            if hasattr(st, 'init_state') and hasattr(st, 'lvelvec'):
+                f.write("Lattice velocities and vectors\n")
+                f.write(st.init_state)
+                for v in st.lvelvec:
+                    f.write( '  {:18.16f}  {:18.16f}  {:18.16f}\n'.format(v[0], v[1], v[2]) )
+
             if hasattr(st, 'vel') and len(st.vel)>0:
                 printlog("Writing velocity to POSCAR ", imp = 'y')
                 # f.write("Cartesian\n")
@@ -3843,7 +3928,7 @@ class Structure():
 
 
 
-    def write_cif(self, filename = None, mcif = False, symprec = 0.1, write_prim = 0):
+    def write_cif(self, filename = None, mcif = False, symprec = 0.1, write_prim = 0, refine_struct = True):
         """
         Find primitive cell and write it in cif format
         
@@ -3851,7 +3936,9 @@ class Structure():
         mcif (bool) - if True, than write mcif file with magnetic moments included, primitive cell is not supported
         symprec (float) - symmetry precision, symprec = None allows to write the structure as is
         write_prim (bool) - convert structure to primitive 
-        
+        refine_struct (bool)  - If True, get_refined_structure
+                is invoked to convert input structure from primitive to conventional
+                uses spglib.refine_cell which in turn is shorthand for spglib.standardize_cell
 
         """
         
@@ -3894,12 +3981,12 @@ class Structure():
             # symprec = None
 
         if mcif:
-            cif = CifWriter(st_mp, symprec = symprec, write_magmoms=mcif)
+            cif = CifWriter(st_mp, symprec = symprec, write_magmoms=mcif, refine_struct = refine_struct)
         else:
             if st_mp_prim:
-                cif_prim = CifWriter(st_mp_prim, symprec = symprec, )
+                cif_prim = CifWriter(st_mp_prim, symprec = symprec, refine_struct = refine_struct)
             
-            cif = CifWriter(st_mp, symprec = symprec, )
+            cif = CifWriter(st_mp, symprec = symprec, refine_struct = refine_struct)
 
         
         cif_name =  filename+'.'+m+'cif'
@@ -4010,10 +4097,8 @@ class Structure():
     @property
     def vlen(self):
         #return vector lengths
-        r = self.rprimd
-        n = np.linalg.norm
-        return n(r[0]), n(r[1]), n(r[2])
-
+        return np.linalg.norm(self.rprimd, axis=1)
+    
 
     def run_vasp(self):
 

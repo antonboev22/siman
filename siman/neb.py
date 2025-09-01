@@ -15,7 +15,7 @@ from siman.small_functions import is_list_like, makedir, list2string
 from siman.classes import CalculationVasp, cd
 from siman.geo import xcart2xred, xred2xcart, local_surrounding, replic, determine_symmetry_positions
 from siman.impurity import find_pores, determine_voids, determine_unique_voids
-
+from siman.external_tools.nebmaker import nebmaker
 
 
 
@@ -80,7 +80,7 @@ def determine_unique_final(st_pores, sums, avds, x_m):
 
 
 def add_neb(starting_calc = None, st = None, st_end = None,
-    it_new = None, ise_new = None, i_atom_to_move = None, 
+    it_new = None, ise_new = None, i_atom_to_move = None, i_atom_final = None,
     up = 'up2',
     search_type = 'vacancy_creation',
     init_neb_geo_fld = None,
@@ -110,7 +110,7 @@ def add_neb(starting_calc = None, st = None, st_end = None,
         - vacancy_creation - search for neighbors of the same type and make a vacancy as a start position
         - interstitial_insertion - search for two neighboring voids; use them as start and final positions
                                     by inserting atom *atom_to_insert*
-        - None - just use st and st2 as initial and final
+        - None - just use st and st_end as initial and final
         - external - folder with subfolders 00, 01, ... in VASP format is provided using *init_neb_geo_fld*
 
     INPUT:
@@ -120,6 +120,7 @@ def add_neb(starting_calc = None, st = None, st_end = None,
         - st_end (Structure) - final structure
 
         - i_atom_to_move (int) - number of atom for moving starting from 0;
+        - i_atom_final (int) - number of atom representing the final position, from 0;
         - *mag_config* (int ) - choose magnetic configuration - allows to obtain different localizations of electron
         - *replicate* (tuple 3*int) - replicate cell along rprimd
         - i_void_start,  i_void_final (int) - position numbers of voids (or atoms) from the suggested lists
@@ -142,6 +143,9 @@ def add_neb(starting_calc = None, st = None, st_end = None,
         - upload_vts (bool) - if True upload Vasp.pm and nebmake.pl to server
         - run (bool)  - run on server
         - init_neb_geo_fld - folder with initial geometry files in VASP format, automatically switch on 'external' mode 
+
+        - center_on_moving - places the migrating atom  in the center of the supercell for visualization purpurses
+
 
         - old_behaviour (str) - choose naming behavior before some date in the past for compatibility with your projects
             '020917'
@@ -191,7 +195,8 @@ def add_neb(starting_calc = None, st = None, st_end = None,
         printlog('I use folder with input files for neb in VASP format:', init_neb_geo_fld, imp = 'y')
         if st or starting_calc:
             printlog('Warning! st and starting_calc are ignored')
-        neb_folders = [ f.name for f in os.scandir(init_neb_geo_fld) if f.is_dir() ]
+        neb_folders = sorted([ f.name for f in os.scandir(init_neb_geo_fld) if f.is_dir() ])
+        printlog('Neb folders are ', neb_folders, imp = 'y')
         images = len(neb_folders) - 2
         search_type = 'external'
 
@@ -216,12 +221,16 @@ def add_neb(starting_calc = None, st = None, st_end = None,
     # sys.exit()
 
     if corenum == None:
-        if images == 3:
+        if images == 1:
+            corenum = 16
+        elif images == 3:
             corenum = 15
         elif images == 5:
             corenum = 15
         elif images == 7:
             corenum = 14
+        elif images == 9:
+            corenum = 9
         else:
             printlog('add_neb(): Error! number of images', images,'is unknown to me; please provide corenum!')
 
@@ -384,7 +393,10 @@ def add_neb(starting_calc = None, st = None, st_end = None,
                 
                 x_m = st.xcart[i_m]
 
+
                 el_num_suffix =  type_atom_to_move +str(i_m+1)
+                # print(el_num_suffix)
+                # sys.exit()
                 atom_to_insert = atom_to_move
 
                 st1 = st
@@ -526,6 +538,11 @@ def add_neb(starting_calc = None, st = None, st_end = None,
             'I can suggest you '+str (len(end_pos_n) )+' end positions. The distances to them are : ',np.round(sur[3][1:], 2), ' A\n ',
             'They are ', [invert(z) for z in final_pos_z], 'atoms, use *i_void_final* to choose required: 1, 2, 3 ..', imp = 'y')
 
+            if i_atom_final:
+                print('Their numbers are', end_pos_n)
+                i_void_final = end_pos_n.index(i_atom_final)+1
+                printlog('i_atom_final was detected, i_void_final rewritten with', i_void_final, 'for atom (from zero)',i_atom_final, imp = 'y')
+
             i_sym_final_l = []
             for j in end_pos_n:
                 for i, l in enumerate(numbers):
@@ -557,8 +574,9 @@ def add_neb(starting_calc = None, st = None, st_end = None,
 
             if old_behaviour == '261018':
                 name_suffix += el_num_suffix+'v'+str(i_void_final)
+            elif i_atom_final:
+                name_suffix += 'f'+str(i_atom_final+1)
             else:
-
                 name_suffix += el_num_suffix+'v'+str(i_void_final)+list2string(end_pos_types_el, joiner = '')
 
                 # print(name_suffix)
@@ -568,19 +586,13 @@ def add_neb(starting_calc = None, st = None, st_end = None,
             x_del = sur[0][i_void_final]
             printlog('xcart of atom to delete', x_del)
             i_del = st.find_atom_num_by_xcart(x_del)
-            # print(x_del)
-            # print(st.xcart)
-            # for x in st.xcart:
-            #     if x[0] > 10:
-            #         print(x)
+
 
 
             print_and_log( 'number of atom to delete = ', i_del, imp = 'y')
             if i_del == None:
                 printlog('add_neb(): Error! I could find atom to delete!')
 
-            # print st.magmom
-            # print st1.magmom
 
 
             # try:
@@ -844,8 +856,8 @@ def add_neb(starting_calc = None, st = None, st_end = None,
         write_xyz(st2s, file_name = it_new+'_end')
 
 
-    st1s.write_poscar('xyz/POSCAR1')
-    st2s.write_poscar('xyz/POSCAR2')
+    st1s.write_poscar('xyz/POSCAR1', aseheader = True)
+    st2s.write_poscar('xyz/POSCAR2', aseheader = True)
     # print(a)
     # runBash('cd xyz; mkdir '+it_new+'_all;'+"""for i in {00..04}; do cp $i/POSCAR """+ it_new+'_all/POSCAR$i; done; rm -r 00 01 02 03 04')
     
@@ -853,8 +865,9 @@ def add_neb(starting_calc = None, st = None, st_end = None,
         if init_neb_geo_fld:
             printlog('Check neb files at', init_neb_geo_fld, imp = 'y')
         else:
-           a = runBash(header.PATH2NEBMAKE+' POSCAR1 POSCAR2 3')
-           print(a)
+           # a = runBash(header.PATH2NEBMAKE+' POSCAR1 POSCAR2 3')
+           # print(a)
+           nebmaker('POSCAR1','POSCAR2', images)
            dst = it_new+'_all'
            makedir(dst+'/any')
            for f in ['00', '01', '02', '03', '04']:

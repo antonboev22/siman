@@ -35,7 +35,7 @@ class CalculationGaussian(Calculation):
         """
         """
         return
-    def check_kpoints(self):
+    def check_kpoints(self, ngkpt):
 
         return
 
@@ -82,6 +82,9 @@ class CalculationGaussian(Calculation):
     def make_incar(self):
         """
         Create input file for gaussian
+
+
+        job_type (str) - 'SP', Opt' - https://gaussian.com/capabilities/
         """
         from pymatgen.io.gaussian import GaussianInput
         d = self.dir
@@ -96,7 +99,10 @@ class CalculationGaussian(Calculation):
         spin_multiplicity = sp.get('multiplicity')
         charge = sp.get('charge')
         SCRF = sp.get('SCRF')
+        chk = sp.get('chk')
         # route_parameters = None#{"SCF":"Tight"}
+        # print(sp)
+        # print('job_type', job_type)
         route_parameters = {job_type:''}
         if SCRF:
             route_parameters[SCRF] = ''
@@ -106,13 +112,22 @@ class CalculationGaussian(Calculation):
             mem = 24
 
         link0_parameters = {'%NProcShared':self.cluster['corenum'], '%mem':str(mem)+'GB'}
+        if chk:
+            link0_parameters['%chk'] = str(chk)
+        
+        # print(functional)
+        # if not functional:
+            # printlog('Error! The set contains no functional, please provide!')
 
         inp = GaussianInput(self.init, basis_set = basis_set, charge = charge, spin_multiplicity = spin_multiplicity,
             functional = functional, route_parameters = route_parameters, 
             input_parameters = sp.get('optional'), link0_parameters = link0_parameters )
 
-        inp.write_file(incar, cart_coords=True)
+
+        # print(route_parameters)
+
         # sys.exit()
+        inp.write_file(incar, cart_coords=True)
         
         return [incar]
 
@@ -174,6 +189,10 @@ class CalculationGaussian(Calculation):
                 # print(line)
                 freqs = [f(a) for a in line.split()[3:]]
                 self.low_frequencies.extend(freqs)
+
+            if 'Sum of electronic and thermal Free Energies=' in line:
+                self.e_gibbs = f(line.split()[-1]) # 
+
 
 
         return

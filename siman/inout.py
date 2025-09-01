@@ -134,12 +134,13 @@ def cif2poscar(cif_file, poscar_file):
 
 
 
-    # print(header.CIF2CELL)
+    # print('CIF2CELL', header.CIF2CELL)
     if pymatgen_flag and not header.CIF2CELL:
         # print(cif_file)
         parser = CifParser(cif_file)
         # s = parser.get_structures(primitive = True)[0]
-        s = parser.get_structures(primitive = 0)[0]
+        # s = parser.get_structures(primitive = 0)[0]
+        s = parser.parse_structures(primitive = 0)[0]
         
 
         si = s._sites[0]
@@ -268,6 +269,9 @@ def smart_structure_read(filename = None, curver = 1, calcul = None, input_folde
     if cl.path["input_geo"] == None: 
         printlog("Error! Input file was not properly read for some reason")
     
+    if not cl.init.magmom:
+        cl.init.magmom = [None]
+
 
     return cl.init
 
@@ -515,8 +519,22 @@ def read_poscar(st, filename, new = True):
                     select.append(flagset)
 
 
+        lattice_vel_vec = []
         velocities = []
         newline = f.readline() # if velocities are available - they are separated by one new line
+
+        if newline.strip() == 'Lattice velocities and vectors':
+            init_state = f.readline()
+            st.init_state = init_state
+
+            for i in range(6):
+                lvelvec = f.readline().split()
+                lattice_vel_vec.append( np.asarray([float(lvelvec[0]), float(lvelvec[1]), float(lvelvec[2])]) )
+            st.lvelvec = lattice_vel_vec
+
+            newline = f.readline()
+
+
         vel1 = f.readline()
         # print(vel1)
         if vel1:
@@ -1335,9 +1353,11 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         # mforce = []
         self.list_e_sigma0 = []
         self.list_etotal = [] # list of MD energies
-        self.list_ekin = [] # list of kinetic energies  
+        self.list_temp = [] # list of MD temperatures
         self.list_e_without_entr = []
         self.list_e_conv = [] # convergence of energy - all steps
+        self.list_ekin = [] # convergence of kinetic energy - all steps
+
         # try:
         #     self.end = copy.deepcopy(self.init) # below needed end values will be updated
         # except:
@@ -1351,6 +1371,8 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         #self.end.znucl = self.znucl
         self.end.name = self.name+'.end'
         self.end.list_xcart = []
+        self.end.list_rprimd = []
+        self.list_stress = []
         self.energy = empty_struct()
         self.end.zval = []
         de_each_md = 0 # to control convergence each md step
@@ -1425,6 +1447,8 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         spin_polarized = None
         ifmaglist = None
         self.mags_step = []
+        self.vlength = 0
+
         for line in outcarlines:
 
 
@@ -1536,12 +1560,16 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
                     printlog([v > 1e-3 for v in low+high], imp = 'Y' )
             
             if "direct lattice vectors" in line:
-                if not contcar_read:
+                if 'md_geo' in show or not contcar_read:
+                    rprimd = []
                     for v in 0,1,2:
                         line = outcarlines[i_line+1+v]
                         line = line.replace('-', ' -')
                         # print(line)
-                        self.end.rprimd[v] = np.asarray( [float(ri) for ri in line.split()[0:3]   ] )
+                        rprimd.append(np.asarray( [float(ri) for ri in line.split()[0:3]   ] ))
+                    self.end.rprimd = rprimd
+                    if 'npt' in show:
+                        self.end.list_rprimd.append(rprimd)
 
 
                 #print self.end.rprimd
@@ -1561,7 +1589,7 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
                     self.end.xcart = local_xcart
 
             
-                    if out_type == 'xcarts':
+                    if out_type == 'xcarts' or 'md_geo' in show:
                         self.end.list_xcart.append(local_xcart) #xcart at each step only for dimer
 
                         #the change of typat is accounted below
@@ -1652,12 +1680,11 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
                 gstress.append( round( float(line.split('=')[2].split()[0])*1000 *100, 3 )  )
             #if "Total" in line:
                 #gstress.append( red_prec(float(line.split()[4])*1000 *100, 1000 )  )
-            if "volume of cell" in line:
-                try:                     
-                    self.end.vol = float(line.split()[4])
-                except ValueError: 
-                    printlog("Warning! Cant read volume in calc "+self.name+"\n")
-                #print self.vol      
+            # if "volume of cell" in line: #commented, because, the vol provided in OUTCAR has low precision, calculated below from rprimd
+            #     try:                     
+            #         self.end.vol = float(line.split()[4])
+            #     except ValueError: 
+            #         printlog("Warning! Cant read volume in calc "+self.name+"\n")
 
             if "generate k-points for:" in line: 
                 self.ngkpt = tuple(  [int(n) for n in line.split()[3:]]  )
@@ -1714,11 +1741,18 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
                 self.e_without_entr = float(line.split()[3]) #
                 self.energy_sigma0 = float(line.split()[6]) #energy(sigma->0)
                 self.e0 = self.energy_sigma0
+
                 self.list_e_sigma0.append(  self.energy_sigma0  )
                 self.list_e_without_entr.append(  self.e_without_entr  )
 
                 de_each_md_list.append(de_each_md)
 
+            if "kinetic energy EKIN   =" in line:
+                self.ekin = float(line.split()[4])
+                self.list_ekin.append(self.ekin)
+
+            if "(temperature" in line:
+                self.list_temp.append(float(line.split()[-2]))
 
             if "energy without entropy =" in line:
                 e_sig0_prev = e_sig0
@@ -1744,17 +1778,17 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
 
 
 
+
             if re_lengths.search(line):
-                self.vlength = [red_prec( float(l),1000 ) for l in outcarlines[i_line + 1].split()[0:3]]
-                #print self.vlength
+                self.vlength = [float(l) for l in outcarlines[i_line + 1].split()[0:3]]
+
             if "in kB" in line:
-                # print(line)
-                # try:
                 line = line.replace('-', ' -')
-                # print(line)
                 lines_str = line.split()[2:]
                 try:
                     self.stress = [float(i)*100 for i in lines_str]  # in MPa 
+                    if 'md_geo' in show and 'npt' in show:
+                        self.list_stress.append(self.stress)
                 except:
                     printlog('Warning! Some problem with *in kB* line of OUTCAR', imp = 'y')
                     printlog(line, imp = 'y')
@@ -1847,15 +1881,14 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
 
 
             if 'magnetization (x)' in line:
-                # print(line)
-                # if ifmaglist is not None:
+
                 mags = []
-                for j in range(self.end.natom):
-                    mags.append( float(outcarlines[i_line+j+4].split()[-1]) )
-                
-                tot_mag_by_atoms.append(np.array(mags))#[ifmaglist])
-                # print(ifmaglist)
-                tot_mag_by_mag_atoms.append(np.array(mags)[ifmaglist])
+                if ifmaglist is not None:
+                    for j in range(self.end.natom):
+                        mags.append( float(outcarlines[i_line+j+4].split()[-1]) )
+                    
+                    tot_mag_by_atoms.append(np.array(mags))#[ifmaglist])
+                    tot_mag_by_mag_atoms.append(np.array(mags)[ifmaglist])
                 # print tot_mag_by_atoms
                 # magnetic_elements
                 # ifmaglist
@@ -1971,29 +2004,7 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
                 e_af_ii = line.split()[3]
                 self.e_added_field_ion.append(float(e_af_ii))
 
-                # print(line)
-
-
-                # for i in range(1,4):
-                #     line = outcarlines[i_line+i]
-                #     print(line)
-
-
-
-            # if 'irreducible k-points:': in line:
-            #     self.nkpt = int(line.split()[1])
-
-
-
-
             i_line += 1
-        # sys.exit()
-        #Check total drift
-        
-
-
-
-
 
 
     try:
@@ -2024,10 +2035,7 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         self.maxforce = maxforce[-1][1]
     except:
         self.maxforce = 0
-    # if max_magnitude < self.set.toldff/10: max_magnitude = self.set.toldff
-    # print 'magn', magnitudes
-    # print 'totdr', tdrift
-    # print 'max_magnitude', max_magnitude
+
     try: 
         
         if max_magnitude < self.set.tolmxf: 
@@ -2035,34 +2043,22 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
     except:
         ''
 
-    #if any(d > 0.001 and d > max_magnitude for d in tdrift):
     if max_tdrift > 0.001 and max_tdrift > max_magnitude:
         
         printlog( "Total drift is too high! At the end one component is {:2.1f} of the maximum force, check output!\n".format(max_tdrift)  )
         pass
-    #else: maxdrift = 
-    # print magn
+
+
     if tot_mag_by_atoms:
         self.end.magmom = tot_mag_by_atoms[-1].tolist()
 
     """update xred"""
     self.end.update_xred()
 
-    # print(self.init.zval)
-    # self.end.zval = self.init.zval
+    self.end.get_volume() #property
 
-
-
-
-
-
-
-
-    #print "init pressure = ",self.extpress_init,"; final pressure =",self.extpress
-    #print self.end.xred
-    #self.vol = np.dot( self.rprimd[0], np.cross(self.rprimd[1], self.rprimd[2])  ); #volume
     nscflist.append( niter ) # add to list number of scf iterations during mdstep_old
-    #print "Stress:", self.stress
+
     v = self.vlength
     self.end.vlength = self.vlength
 
@@ -2109,12 +2105,13 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
         e_diff_md = (self.list_e_sigma0[-1] - self.list_e_sigma0[-2])*1000 #meV
 
     e_diff = (e_sig0_prev - e_sig0)*1000 #meV
-    # print(e_diff)
+    # print('E diff is ', e_diff)
+    # print('toldfe ', type(toldfe) )
     self.e_diff = e_diff #convergence
-    if abs(e_diff) > float(toldfe)*1000:
+    if abs(e_diff) - float(toldfe)*1000 > 1e-3 :
         toldfe_warning = '!'
         printlog("Attention!, SCF was not converged to desirable prec", 
-            round(e_diff,3), '>', toldfe*1000, 'meV', imp = 'y')
+            '{:.1e}'.format(e_diff), 'meV >', float(toldfe)*1000, 'meV', imp = 'y')
     else:
         toldfe_warning = ''
 
@@ -2189,7 +2186,7 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
 
     # lens = ("%.2f;%.2f;%.2f" % (v[0],v[1],v[2] ) ).center(j[19])
     lens = "{:4.2f}, {:4.2f}, {:4.2f}".format(v[0],v[1],v[2] ) 
-    r1 = ("%.2f" % ( v[0] ) ).center(j[19])            
+    r1 = ("%.2f" % ( v[0] ) ).center(j[19])
     vol = ("%.1f" % ( self.end.vol ) ).center(j[20])
     nat = ("%i" % ( self.end.natom ) ).center(j[21])
     try:
@@ -2468,12 +2465,17 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
             path_l = cl.path['output'].replace('400.OUTCAR','')
             plt.tight_layout()
             filename = path_l+str(self.name)+'.png'
+            makedir(filename)
+
             plt.savefig(filename)
             printlog('Freq file saved to ', filename, imp = 'y')
 
         else:
             path_l = 'figs/'
             filename = path_l+str(self.id)+'.pdf'
+            makedir(filename)
+            plt.tight_layout()
+            
             plt.savefig(filename)
             printlog('Freq file saved to ', filename, imp = 'y')
             plt.show()
@@ -2494,6 +2496,8 @@ def read_vasp_out(cl, load = '', out_type = '', show = '', voronoi = '', path_to
 
     # print(out_type)
     # sys.exit()
+    if out_type is None:
+        out_type = ''
     if   out_type == 'gbe'  : outst = outst_gbe
     elif out_type == 'e_imp': outst = outst_imp
     elif out_type == 'e_seg': outst = outst_seg            
