@@ -292,6 +292,10 @@ class Structure():
         xr = copy.deepcopy(self.xred)
         r = copy.deepcopy(self.rprimd)
 
+        st.rprimd[i1_r] = r[i2_r]
+        st.rprimd[i2_r] = r[i1_r]
+
+
         for i in range(0,st.natom):
             st.xcart[i][i1_r] = xc[i][i2_r] 
             st.xcart[i][i2_r] = xc[i][i1_r] 
@@ -550,7 +554,10 @@ class Structure():
         return mag_grouped
 
 
-        
+
+
+
+
 
     def set_magnetic_config(self, element, moments):
         #set magnetic configuration based on symmetry non-equivalent positions
@@ -941,6 +948,8 @@ class Structure():
         r = self.rprimd
         n = np.linalg.norm
         return n(r[0]), n(r[1]), n(r[2])
+
+
 
 
 
@@ -1873,6 +1882,8 @@ class Structure():
             ''
             # print ('No!')
 
+        if hasattr(st, 'select') and any(st.select):
+            del st.select[i]
 
 
         st.natom-=1

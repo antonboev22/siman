@@ -188,7 +188,17 @@ vasp_other_keys = [
 'MIXPRE',
 'LANGEVIN_GAMMA_L',
 'LANGEVIN_GAMMA',
-'PMASS'
+'PMASS',
+'LBLUEOUT',
+'ANDERSEN_PROB',
+'LSPIRAL',
+'LNONCOLLINEAR', 
+'QSPIRAL',
+'ENMAX',
+'ENINI',
+'KPAR',
+'LZEROZ'
+
 ]
 vasp_keys = vasp_electronic_keys+vasp_ionic_keys+vasp_other_keys
 

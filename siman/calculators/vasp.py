@@ -259,7 +259,7 @@ class CalculationVasp(Calculation):
 
     def make_incar(self):
         """Makes Incar file for current calculation and copy all
-        TO DO: there is no need to send all POSCAR files; It is enothg to send only one. However for rsync its not that crucial
+        TO DO: there is no need to send all POSCAR files; It is enough to send only one. However for rsync its not that crucial
         """
         #print "Begin make---------------------------------------------"
         
@@ -304,8 +304,16 @@ class CalculationVasp(Calculation):
                         ''
                     elif key == 'MAGMOM' and hasattr(self.init, 'magmom') and self.init.magmom and any(self.init.magmom): #
                         mag = self.init.magmom
-                        magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order ]
-                        f.write('MAGMOM = '+list2string(magmom_aligned_with_poscar)+"\n") #magmom from geo file has higher preference
+
+                        if isinstance(mag[0], (list, tuple)):  # vector magmom
+                            magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order]
+                            flat_list = [str(c) for vec in magmom_aligned_with_poscar for c in vec]
+                            f.write('MAGMOM = ' + ' '.join(flat_list) + '\n')
+                        else:  # scalar magmom
+                            magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order]
+                            f.write('MAGMOM = ' + list2string(magmom_aligned_with_poscar) + '\n')
+                        # magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order ]
+                        # f.write('MAGMOM = '+list2string(magmom_aligned_with_poscar)+"\n") #magmom from geo file has higher preference
                    
                     elif vp[key] == None:
                         ''
@@ -517,6 +525,7 @@ class CalculationVasp(Calculation):
             curset = self.set
 
         vp = curset.vasp_params
+        print(params)
 
         if params is None:
             params = {}
@@ -659,8 +668,12 @@ class CalculationVasp(Calculation):
         # print(self.init.magmom)
         # print(None in self.init.magmom)
         # sys.exit()
-        if hasattr(self.init, 'magmom') and hasattr(self.init.magmom, '__iter__') and not None in self.init.magmom and bool(self.init.magmom):
 
+        # if params['update_set_dic']['MAGMOM']:
+        #     printlog('actualize_set(): Magnetic moments are determined from params:',params['update_set_dic']['MAGMOM'], imp = 'y')
+
+        # else:
+        if hasattr(self.init, 'magmom') and hasattr(self.init.magmom, '__iter__') and not None in self.init.magmom and bool(self.init.magmom):
             printlog('actualize_set(): Magnetic moments are determined from self.init.magmom:',self.init.magmom, imp = 'y')
 
         elif hasattr(curset, 'magnetic_moments') and curset.magnetic_moments:
@@ -720,7 +733,7 @@ class CalculationVasp(Calculation):
             if len(spec_mom_is) % 2 == 0 and len(spec_mom_is) > 0:
                 printlog('Number of elements is even! trying to find all antiferromagnetic orderings:', imp = 'y')
                 ns = len(spec_mom_is); 
-                number_of_ord = int(math.factorial(ns) / math.factorial(0.5 * ns)**2)
+                number_of_ord = int(math.factorial(ns) / math.factorial(int(0.5 * ns))**2)
                 
                 if number_of_ord > 10000:
                     printlog('Attention! Too much orderings (1000), skipping ...')
@@ -805,10 +818,10 @@ class CalculationVasp(Calculation):
         
         elif 'MAGMOM' in vp and vp['MAGMOM']: #just add * to magmom tag if it is provided without it
             printlog('Magnetic moments from vasp_params["MAGMOM"] are used\n')
-            
-            # if "*" not in vp['MAGMOM']:
-            #     vp['MAGMOM'] = str(natom) +"*"+ vp['MAGMOM']
         
+        # if "*" not in vp['MAGMOM']:
+        #     vp['MAGMOM'] = str(natom) +"*"+ vp['MAGMOM']
+    
 
 
         # print (self.init.magmom, 'asdfaaaaaaaaaaaa')
@@ -1216,6 +1229,44 @@ class CalculationVasp(Calculation):
         return outst
 
 
+
+
+    def read_oszicar(path_to_file):
+
+        total_mags = []          # Список полной магнетизации на каждый шаг
+        atom_mags_per_step = []  # Список: каждый элемент — массив магнитных моментов атомов на шаге
+
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+
+        current_atom_mags = []
+
+        for line in lines:
+            line = line.strip()
+
+            # Полная магнетизация
+            if "mag=" in line:
+                match = re.search(r"mag=\s*([-0-9.Ee+]+)", line)
+                if match:
+                    total_mags.append(float(match.group(1)))
+                
+                if current_atom_mags:
+                    atom_mags_per_step.append(current_atom_mags)
+                    current_atom_mags = []
+
+            # Поатомные магнитные моменты (по колонке M_int)
+            elif re.match(r'^\s*\d+\s', line):  # строка начинается с номера атома
+                parts = line.split()
+                if len(parts) >= 8:
+                    # M_int: три последние компоненты
+                    m_int = list(map(float, parts[5:8]))
+                    current_atom_mags.append(m_int)
+
+        # На случай, если последний шаг не завершился mag=
+        if current_atom_mags:
+            atom_mags_per_step.append(current_atom_mags)
+
+        return total_mags, atom_mags_per_step
 
 
     def determine_filenames(self, nametype = 'asoutcar'):
