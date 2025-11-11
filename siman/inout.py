@@ -142,8 +142,8 @@ def cif2poscar(cif_file, poscar_file):
         # print(cif_file)
         parser = CifParser(cif_file)
         # s = parser.get_structures(primitive = True)[0]
-        # s = parser.get_structures(primitive = 0)[0]
-        s = parser.parse_structures(primitive = 0)[0]
+        s = parser.get_structures(primitive = 0)[0]
+        # s = parser.parse_structures(primitive = 0)[0]
         
 
         si = s._sites[0]
