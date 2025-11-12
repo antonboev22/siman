@@ -10,4 +10,7 @@ Developers:
  - Arseniy Burov
  - Nikita Davydov
  - Marina Titarenko
+ - Tatyana Kobernik
+ - Andrey Geondzhian
+ - Nikita Davydov
 
