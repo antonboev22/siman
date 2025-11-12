@@ -4,4 +4,4 @@ git pull
 git merge simanaks
 git push
 git checkout simanaks
-
+git merge master
