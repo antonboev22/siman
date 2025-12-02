@@ -998,7 +998,6 @@ class Calculation(object):
             self.children.append(child)
 
         return child
-<<<<<<< HEAD
 
 
 

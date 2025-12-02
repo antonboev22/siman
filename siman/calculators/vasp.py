@@ -255,7 +255,7 @@ class CalculationVasp(Calculation):
                 elif vp['LNONCOLLINEAR']: 
                     printlog('LNONCOLLINEAR calculation detected; I double number of bands up to', vp['NBANDS'], imp = 'Y')
 
-                if 'LREAL' in vp and 'False' not in vp['LREAL']:
+                if 'LREAL' in vp and 'False' not in str(vp['LREAL']):
                     printlog('Warning! LREAL = .False. is suggested for SOC!', imp = 'Y')
 
 
@@ -334,6 +334,7 @@ class CalculationVasp(Calculation):
                             f.write('MAGMOM = ' + ' '.join(flat_list) + '\n')
                         else:  # scalar magmom
                             magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order]
+                            print(magmom_aligned_with_poscar)
                             f.write('MAGMOM = ' + list2string(magmom_aligned_with_poscar) + '\n')
                         # magmom_aligned_with_poscar = [mag[i] for i in poscar_atom_order ]
                         # f.write('MAGMOM = '+list2string(magmom_aligned_with_poscar)+"\n") #magmom from geo file has higher preference
@@ -868,7 +869,7 @@ class CalculationVasp(Calculation):
         if ('LSORBIT' in vp and vp['LSORBIT']) or ('LNONCOLLINEAR' in vp and vp['LNONCOLLINEAR']):
             if len(magmom) == 0:
                 printlog('Warning! magmom is empty')
-            elif len(magmom) == self.init.natom:
+            elif len(magmom) == self.init.natom and len(magmom[0]) == 1:
                 printlog('magmom is converted to [0,0, m, 0, 0, m ...] required for noncollinear calculations', imp = 'y')
                 magmom = [x for m in magmom for x in (0, 0, m)]
             else:
@@ -928,6 +929,8 @@ class CalculationVasp(Calculation):
         if 'OCCEXT' in self.set.vasp_params and self.set.vasp_params['OCCEXT'] == 1:
             list_to_copy.append(  os.path.join(d, 'OCCMATRIX')   )
 
+        if 'LBLUEOUT' in self.set.vasp_params and self.set.vasp_params['LBLUEOUT'] in [1, '.TRUE.']:
+            list_to_copy.append(  os.path.join(d, 'ICONST')   )
         
         if "up" in update: #Copy to server
             printlog('Files to copy:', list_to_copy)
@@ -1039,6 +1042,7 @@ class CalculationVasp(Calculation):
         from siman.picture_functions import plt
         import statsmodels.api as sm  # module to build a LOWESS model
         import pandas as pd
+        import numpy as np
 
         lowess = sm.nonparametric.lowess
 
@@ -1557,8 +1561,6 @@ class CalculationVasp(Calculation):
         from siman.inout import write_occmatrix
         # print(self.get_path())
         # sys.exit()
-
-    
 
         return write_occmatrix(self.occ_matrices, self.get_path())
 

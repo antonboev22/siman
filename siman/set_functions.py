@@ -201,6 +201,7 @@ vasp_other_keys = [
 'LMONO',
 'LWANNIER90', 'LWRITE_MMN_AMN', 'LWRITE_UNK', 'NUM_WANN', 'LWRITE_SPN', 'WANNIER90_WIN', 'LWANNIER90_RUN',
 'QSPIRAL', 'LSPIRAL', 'ENINI', 'ENMAX', 'LZEROZ',
+'VCA'
 ]
 vasp_keys = vasp_electronic_keys+vasp_ionic_keys+vasp_other_keys
 
