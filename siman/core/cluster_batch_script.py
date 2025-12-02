@@ -202,7 +202,7 @@ def write_batch_header(cl, batch_script_filename = None,
                 f.write(header.cluster['modules']+'\n')
             
            
-            f.write("export PATH=$PATH:"+header.cluster['homepath'] +"/tools/\n")
+            f.write("export PATH=$PATH:"+header.cluster['homepath'] +"/"+ header.cluster_tools+"\n")
 
         
         if schedule_system == 'simple':
@@ -465,7 +465,7 @@ def analysis_script(cl, write = True, f = None ):
     return
 
 
-def name_mod_U_last(cl):
+def name_mod_U_last(cl, f):
     name_mod_last = 'U'+str(
                 cl.update_incar(parameter = 'LDAUU', 
                     u_ramp_step = cl.set.u_ramping_nstep-1, write = False, f = f)).replace('.','') #used to det last U
@@ -636,7 +636,7 @@ def write_body(cl, version = None, savefile = None, set_mod = '', copy_poscar_fl
     return contcar_file
 
 
-def u_ramp_prepare(cl):
+def u_ramp_prepare(cl, f):
     if 'u_ramping' in cl.calc_method:
         u = cl.update_incar(parameter = 'LDAUU', u_ramp_step = cl.set.u_ramping_nstep-1, write = False, f = f)
         name_mod   = '.U'+str(u).replace('.', '')
@@ -719,7 +719,7 @@ def write_footer(cl, set_mod = '', run_tool_flag = True,
             subfolders.append(n_st)
 
 
-        name_mod, name_mod_last = u_ramp_prepare(cl)
+        name_mod, name_mod_last = u_ramp_prepare(cl, f)
 
 
         start = '1'+name_mod+'.OUTCAR '
@@ -756,7 +756,7 @@ def write_footer(cl, set_mod = '', run_tool_flag = True,
                     f.write('cp '+startC+ff+'/POSCAR\n')
                     f.write('cp '+finalC+lf+'/POSCAR\n')
                 else:
-                    f.write('export PATH=$PATH:'+header.cluster_home+'/tools/vts/\n') #header.project_path_cluster
+                    f.write('export PATH=$PATH:'+header.cluster_home+'/'+header.cluster_tools + '/vts/\n') #header.project_path_cluster
 
                     f.write(header.NEBMAKERTOOL +' '+ startC + finalC + nim_str +' \n')
 
@@ -825,10 +825,10 @@ def write_footer(cl, set_mod = '', run_tool_flag = True,
             # f.write('export PYTHONPATH=$PYTHONPATH:'+CLUSTER_PYTHONPATH+'\n')
             # f.write('/home/aksenov/tools/fit_tool.py '+list2string(outputs)+'\n' )
             if cl.calculator == 'qe':
-                f.write('python '+header.cluster_home+'/tools/fit_tool_qe.py '+list2string(outputs)+'\n' )
+                f.write('python '+header.cluster_home+'/'+header.cluster_tools + '/fit_tool_qe.py '+list2string(outputs)+'\n' )
                 f.write('cat INCAR 100.POSCAR > scf.in  \n')
             else:
-                f.write('python '+header.cluster_home+'/tools/fit_tool.py '+list2string(outputs)+'\n' )
+                f.write('python '+header.cluster_home+'/'+header.cluster_tools + '/fit_tool.py '+list2string(outputs)+'\n' )
                 f.write('cp 100.POSCAR POSCAR \n')
         
         if 'u_ramping' in cl.calc_method:

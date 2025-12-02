@@ -4143,7 +4143,9 @@ class Structure():
     def vlen(self):
         #return vector lengths
         return np.linalg.norm(self.rprimd, axis=1)
-    
+    def vol_at(self):
+        #
+        return self.vol/self.natom
 
     def run_vasp(self):
 
