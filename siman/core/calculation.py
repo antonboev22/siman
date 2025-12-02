@@ -1000,23 +1000,15 @@ class Calculation(object):
         return child
 
 
+    # def get_mag_oszi(self):
+    #     #get magnetic moments from OSZICAR
 
+    #     path_to_file = self.get_file('*OSZICAR')
 
+    #     from siman.calculators.vasp import read_oszicar
 
-
-    def get_mag_oszi(self):
-        #get magnetic moments from OSZICAR
-
-        path_to_file = self.get_file('*OSZICAR')
-
-        from siman.calculators.vasp import read_oszicar
-
-        total_mags, atom_mags_per_step = read_oszicar(path_to_file)
-        print(total_mags, atom_mags_per_step)
-
-
-
-
+    #     total_mags, atom_mags_per_step = read_oszicar(path_to_file)
+    #     print(total_mags, atom_mags_per_step)
 
 
 

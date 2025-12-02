@@ -568,7 +568,6 @@ class CalculationVasp(Calculation):
             curset = self.set
 
         vp = curset.vasp_params
-        print(params)
 
         if params is None:
             params = {}
