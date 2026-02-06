@@ -366,6 +366,7 @@ def add_loop(it = None, setlist = None, verlist = 1, calc = None, varset = None,
             't' - XDATCAR
             'z' - OSZICAR
             'w' - WAVECAR
+            'r' - REPORT
 
         - ifolder - explicit path to folder where to search for input geo file.
 
@@ -3538,7 +3539,7 @@ def get_structure_from_matproj(it = None, it_folder = None, ver = None, mat_proj
             # print groundstate_st_id
             # print m.get_data(groundstate_st_id, data_type='vasp', prop='hubbards')
         
-        st_pmg =  m.get_structure_by_material_id(groundstate_st_id, final=True)
+        st_pmg =  m.get_structure_by_material_id(groundstate_st_id)
         
         if 'conv' in mat_proj_cell:
             from pymatgen.symmetry.analyzer import SpacegroupAnalyzer

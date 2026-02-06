@@ -2446,51 +2446,62 @@ def create_surface(st, miller_index, min_slab_size = 10, min_vacuum_size = 10, s
     return slabs[surface_i]
 
 
-def stoichiometry_criteria(st1,st2):
-
-    natom1 = st1.get_natom()
-    natom2 = st2.get_natom()
-
-    tra1 = st1.get_transition_elements()
-    tra2 = st2.get_transition_elements()
-    ntra1 = len(tra1)
-    if ntra1 == 0: 
-        ntra1 = natom1
-    ntra2 = len(tra2)
-    if ntra2 == 0: 
-        ntra2 = natom2
-    rat1 = natom1/ntra1
-    rat2 = natom2/ntra2
-    mul = ntra1/ntra2
-
-    if rat1 == rat2:
-        return 1
-    else:
-        return 0
-
-def stoichiometry_criteria2(st1,st2, silent = 1):
-    atoms1 = st1.get_elements()
-    atoms2 = st2.get_elements()
-
+def stoichiometry_criteria(st_slab, st_bulk, silent=True, tol=1e-6):
     from collections import Counter
-    el_dict1 = Counter(atoms1)
-    el_dict2 = Counter(atoms2)
-    el1 = list(el_dict1.keys())[0]
-    el2 = list(el_dict1.keys())[1]
-    # print(el_dict1)
-    # print(el_dict2)
-    ratio1 = el_dict1[el1]/el_dict1[el2]
-    ratio2 = el_dict2[el1]/el_dict2[el2]
+    """
+     Check whether slab stoichiometry is preserved with respect to the bulk structure.
 
-    if ratio1 == ratio2:
+    Stoichiometry is preserved if there exists a single scaling factor k such that:
+        N_slab(element) = k * N_bulk(element)
+    for all elements.
+
+    Parameters
+    ----------
+    st_bulk : Structure() - Reference bulk structure
+    st_slab : Structure() - Slab or supercell structure
+    silent : bool
+        If False, print diagnostic messages
+    tol : float
+        Numerical tolerance for ratio comparison
+    """
+
+    # Count elements in bulk and slab
+    c_bulk = Counter(st_bulk.get_elements())
+    c_slab = Counter(st_slab.get_elements())
+    
+    # 1. Check that both structures contain the same set of elements
+    if set(c_bulk) != set(c_slab):
         if not silent:
-            print('Stoichiometric')
-        return 1
-    else:
-        if not silent:
-            print('Non-stoichiometric')
-            print(round(ratio1,2), round(ratio2,2))
+            print("Warning! Different set of elements")
+            print("bulk:", dict(c_bulk))
+            print("slab:", dict(c_slab))
         return 0
+
+    # 2. Compute scaling ratios for each element
+    ratios = []
+    for el in c_bulk:
+        if c_bulk[el] == 0:
+            return 0
+        ratios.append(c_slab[el] / c_bulk[el])
+
+    # 3. Check that all ratios are equal within tolerance
+    ref = ratios[0]
+    for r in ratios[1:]:
+        if abs(r - ref) > tol:
+            if not silent:
+                print("❌ Non-stoichiometric")
+                for el in c_bulk:
+                    print(f"{el}: bulk={c_bulk[el]}, slab={c_slab[el]}, ratio={c_slab[el]/c_bulk[el]:.3f}")
+            return 0
+
+    if not silent:
+        print(f"✅ Stoichiometric (scale factor ≈ {ref:.3f})")
+        # for el in c_bulk:
+        #     print(f"{el}: bulk={c_bulk[el]}, slab={c_slab[el]}, ratio={c_slab[el]/c_bulk[el]:.3f}")
+        
+
+
+    return 1
 
 def symmetry_criteria(st):
     from pymatgen.symmetry.analyzer import SpacegroupAnalyzer

@@ -866,7 +866,6 @@ class CalculationVasp(Calculation):
 
         elif 'MAGMOM' in vp and vp['MAGMOM']: #just add * to magmom tag if it is provided without it
             printlog('Magnetic moments from vasp_params["MAGMOM"] are used\n')
-
             magmom = vp['MAGMOM']
             # if "*" not in vp['MAGMOM']:
             #     vp['MAGMOM'] = str(natom) +"*"+ vp['MAGMOM']

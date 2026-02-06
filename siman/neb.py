@@ -370,7 +370,7 @@ def add_neb(starting_calc = None, st = None, st_end = None,
 
                 # printlog('atom ', type_atom_to_move, 'will be moved', imp ='y')
 
-                if i_atom_to_move:
+                if i_atom_to_move != None:
                     printlog('add_neb(): *i_atom_to_move* = ', i_atom_to_move, 'is used', imp ='y')
                     numbers = [[i_atom_to_move]]
                     i_void_start = 1
@@ -379,7 +379,7 @@ def add_neb(starting_calc = None, st = None, st_end = None,
 
                     numbers = determine_symmetry_positions(st, atom_to_move)
 
-                # print(numbers)
+                print('+++++++++++++++++++++++++++',numbers)
                 # sys.exit()
                 if len(numbers)>0:
                     printlog('Please choose position using *i_void_start* :', [i+1 for i in range(len(numbers))],imp = 'y' )
