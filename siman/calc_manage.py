@@ -1731,21 +1731,13 @@ def add_calculation(structure_name, inputset, version, first_version, last_versi
 
         if 'iconst_str' in params or ('LBLUEOUT' in cl.set.vasp_params and cl.set.vasp_params['LBLUEOUT'] == 1): #copy iconst file
             if 'iconst_str' in params:
-                # with tempfile.NamedTemporaryFile('w', delete=False) as tmp:
-                #     tmp.writelines(params['iconst_str'])
-                #     tmp_path = tmp.name
-
-                # shutil.copyfile(tmp_path, cl.dir+'/ICONST' ) # file is provided explicitly
-                # os.remove(tmp_path)
+                
                 with open(cl.dir + '/ICONST', 'w') as f:
                     f.writelines(params['iconst_str'])
 
 
             else:
-                # try:
-                #     shutil.copyfile(dir_1+'/ICONST', cl.dir+'/ICONST' )
-                # except:
-                    printlog('Attention! no ICONST file was found!!!')
+                printlog('Attention! no ICONST file was found!!!', imp = 'Y')
 
         # if cl.des:
         cl.des = ' '+struct_des[id[0]].des + '; ' + varset[id[1]].des

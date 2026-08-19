@@ -575,7 +575,7 @@ def add_neb(starting_calc = None, st = None, st_end = None,
 
             if old_behaviour == '261018':
                 name_suffix += el_num_suffix+'v'+str(i_void_final)
-            elif i_atom_final:
+            elif i_atom_final != None:
                 name_suffix += 'f'+str(i_atom_final+1)
             else:
                 name_suffix += el_num_suffix+'v'+str(i_void_final)+list2string(end_pos_types_el, joiner = '')

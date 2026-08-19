@@ -283,10 +283,11 @@ class Structure():
 
     def exchange_axes_with_atoms(self, i1_r, i2_r):
         """
-        Exchange axes and rotate atoms
+        Exchange axes together with atoms 
 
         INPUT:
-            i1_r
+            i1_r - 0,1,2 axis to change
+            i2_r - 0,1,2 final axis
         
         """
         st = copy.deepcopy(self)
@@ -499,7 +500,7 @@ class Structure():
         return groups_size, groups_nums
 
 
-    def get_mag_tran(self, to_ox = None, silent = 0, fmt = '5.2f', extra_el = None):
+    def get_mag_tran(self, to_ox = None, silent = 0, fmt = '5.2f', extra_el = None, oxygen = 1):
         """
         Print formatted magnetic moments of transition elements, oxygen, and provided extra elements
         
@@ -514,7 +515,8 @@ class Structure():
         """
         if extra_el is None:
             extra_el = []
-        extra_el.append('O') #always show oxygen
+        if oxygen:
+            extra_el.append('O') #always show oxygen
         zels = [invert(el) for el in extra_el ]
 
 
@@ -1345,6 +1347,30 @@ class Structure():
         st = self
         # print()
         return np.linalg.norm( np.cross(st.rprimd[0] , st.rprimd[1]) )
+
+    def get_slab_range(self, axis = 2):
+        """
+        Returns slab's xcart range along normal to surface 
+
+        INPUT:
+            axis (integer) - axis normal to surface
+        
+        RETURN:
+            slab_range (list of floats)  returns a list of min and max value in A of slab range [zmin, zmax]
+
+        author - A. Boev 
+
+        """
+
+        xc_list = self.xcart
+        xc_i_list = [i[axis] for i in xc_list]
+
+        xc_i_min = min(xc_i_list)
+        xc_i_max = max(xc_i_list)
+
+        return [xc_i_min, xc_i_max]
+
+
 
 
     def printme(self):
@@ -2571,29 +2597,50 @@ class Structure():
 
 
 
-    def shift_atoms(self, vector_red = None, vector_cart = None, return2cell = 1):
+    def shift_atoms(self, vector_red = None, vector_cart = None, return2cell = 1, atoms_to_shift = None):
         """
-        Shift all atoms according to *vector_red* or *vector_cart*
+        Shift atoms according to *vector_red* or *vector_cart*
         Use *return2cell* if atoms coordinates should be inside cell
+        atoms_to_shift - list of atoms to shift for example if you need to shift layers or part of slab in interface
         """
         st = copy.deepcopy(self)
-        if vector_cart is not None:
-            vec_cart = np.array(vector_cart)
-            for xc in st.xcart:
-                xc+=vec_cart
-            st.update_xred()
-            
-        elif vector_red is not None:
-            vec = np.array(vector_red)
-            for xr in st.xred:
-                xr+=vec
-            st.xred2xcart()
+
+        #Shift all atoms
+        if not atoms_to_shift:
+            if vector_cart is not None:
+                vec_cart = np.array(vector_cart)
+                for xc in st.xcart:
+                    xc+=vec_cart
+                st.update_xred()
+                
+            elif vector_red is not None:
+                vec = np.array(vector_red)
+                for xr in st.xred:
+                    xr+=vec
+                st.xred2xcart()
+        
+        #Shift part of atoms
+        else:
+            if vector_cart is not None:
+                vec_cart = np.array(vector_cart)
+                for i in atoms_to_shift:
+                    xc=st.xcart[i]
+                    xc+=vec_cart
+                st.update_xred()
+                
+            elif vector_red is not None:
+                vec = np.array(vector_red)
+                for i in atoms_to_shift:
+                    xr=st.xred[i]
+                    xr+=vec
+                st.xred2xcart()
 
         
         if return2cell:
             st = st.return_atoms_to_cell()
         return st
 
+    
 
     def shake_atoms(self, amplitude = 0.1, el_list = None, ):
         """
